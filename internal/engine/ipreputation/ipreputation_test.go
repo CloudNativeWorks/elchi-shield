@@ -172,7 +172,7 @@ func TestGeoBlockCountry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close() //nolint:errcheck
+	defer e.Close()                                                        //nolint:errcheck
 	if v := mustInspect(t, e, "81.2.69.142"); v.Action != decision.Block { // GB
 		t.Fatal("GB source should be blocked")
 	}
@@ -186,7 +186,7 @@ func TestGeoAllowCountryDefaultDeny(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close() //nolint:errcheck
+	defer e.Close()                                                          //nolint:errcheck
 	if v := mustInspect(t, e, "89.160.20.128"); v.Action == decision.Block { // SE allowed
 		t.Fatal("SE source should pass (allowlisted)")
 	}
@@ -200,7 +200,7 @@ func TestGeoBlockASN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close() //nolint:errcheck
+	defer e.Close()                                                      //nolint:errcheck
 	if v := mustInspect(t, e, "1.128.0.1"); v.Action != decision.Block { // AS1221
 		t.Fatal("AS1221 source should be blocked")
 	}

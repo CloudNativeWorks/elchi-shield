@@ -14,7 +14,7 @@ import (
 
 type hdrs map[string]string
 
-func (h hdrs) Header(name string) (string, bool)         { v, ok := h[name]; return v, ok }
+func (h hdrs) Header(name string) (string, bool) { v, ok := h[name]; return v, ok }
 func (h hdrs) RangeHeaders(fn func(string, string) bool) {
 	for k, v := range h {
 		if !fn(k, v) {
