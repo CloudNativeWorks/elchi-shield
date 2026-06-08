@@ -41,6 +41,7 @@ type Metrics struct {
 	detect    *prometheus.CounterVec
 	shadow    *prometheus.CounterVec
 	bodyBytes *prometheus.CounterVec
+	findings  *prometheus.CounterVec // by (engine, action) — which engine blocked/detected
 	latency   *prometheus.HistogramVec
 
 	// Stage metrics, registered once (RegisterStages) → lock-free reads.
@@ -69,11 +70,27 @@ type ListenerMetrics struct {
 	// + Observe — never a per-request WithLabelValues.
 	latencyByPhase map[string]prometheus.Observer
 	latencyOther   prometheus.Observer // fallback for an unregistered phase
+	// findingsByKey is pre-curried per "engine\x00action" so RecordDecision does a
+	// lock-free map read; an unknown engine maps to the "other" bucket.
+	findingsByKey map[string]prometheus.Counter
 }
 
 // latencyPhases are the request/response phase labels the latency histogram is
 // pre-curried for (matching the Processor's finish() phase strings).
 var latencyPhases = []string{"request_headers", "request_body", "response_headers", "response_body"}
+
+// findingEngines is the set of engine/source names the findings_total counter is
+// pre-curried for (so RecordDecision is a lock-free map read, never a per-request
+// WithLabelValues). The value in a Decision.Engine that isn't here falls into the
+// "other" bucket. Keep in sync as engines are added (builtin = native header/body
+// checks; anomaly = the cross-engine scorer).
+var findingEngines = []string{
+	"builtin", "anomaly", "jwt", "ratelimit", "coraza", "ipreputation", "bot",
+	"apikey", "hmacsign", "httpsig", "jwks", "xfcc", "graphql", "openapi", "other",
+}
+
+// findingActions are the non-allow outcomes findings are counted for.
+var findingActions = []string{"block", "detect", "shadow"}
 
 // New builds and registers all collectors. instance, when non-empty, becomes a
 // constant label on every series so multi-machine metrics never collide.
@@ -116,6 +133,7 @@ func New(instance string) *Metrics {
 		detect:           ctrVec("detections_total", "Detect-mode would-block detections (request allowed).", "listener"),
 		shadow:           ctrVec("shadow_detections_total", "Shadow-mode would-block detections.", "listener"),
 		bodyBytes:        ctrVec("body_inspected_bytes_total", "Body bytes inspected.", "listener"),
+		findings:         ctrVec("findings_total", "Findings by the engine that produced them and the action taken (block/detect/shadow).", "listener", "engine", "action"),
 	}
 	m.activeVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "active_config_version", Help: "Active config version (value is always 1).",
@@ -216,9 +234,15 @@ func (m *Metrics) ForListener(id string) *ListenerMetrics {
 		bodyBytes:      m.bodyBytes.WithLabelValues(id),
 		latencyByPhase: make(map[string]prometheus.Observer, len(latencyPhases)),
 		latencyOther:   m.latency.WithLabelValues(id, "other"),
+		findingsByKey:  make(map[string]prometheus.Counter, len(findingEngines)*len(findingActions)),
 	}
 	for _, ph := range latencyPhases {
 		lm.latencyByPhase[ph] = m.latency.WithLabelValues(id, ph)
+	}
+	for _, eng := range findingEngines {
+		for _, act := range findingActions {
+			lm.findingsByKey[eng+"\x00"+act] = m.findings.WithLabelValues(id, eng, act)
+		}
 	}
 	return lm
 }
@@ -323,14 +347,32 @@ func (lm *ListenerMetrics) RecordDecision(d *decision.Decision, phase string, la
 	switch {
 	case d.IsBlock():
 		lm.blocked.Inc()
+		lm.recordFinding(d.Engine, "block")
 	case d.Action == decision.Detect:
 		lm.detect.Inc()
 		lm.allowed.Inc()
+		lm.recordFinding(d.Engine, "detect")
 	case d.Action == decision.Shadow:
 		lm.shadow.Inc()
 		lm.allowed.Inc()
+		lm.recordFinding(d.Engine, "shadow")
 	default:
 		lm.allowed.Inc()
+	}
+}
+
+// recordFinding increments the per-engine/action findings counter (lock-free map
+// read; an unknown or empty engine falls into the "other" bucket).
+func (lm *ListenerMetrics) recordFinding(engine, action string) {
+	if engine == "" {
+		engine = "other"
+	}
+	c := lm.findingsByKey[engine+"\x00"+action]
+	if c == nil {
+		c = lm.findingsByKey["other\x00"+action]
+	}
+	if c != nil {
+		c.Inc()
 	}
 }
 

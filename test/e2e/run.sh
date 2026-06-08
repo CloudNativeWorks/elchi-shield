@@ -347,6 +347,9 @@ case "$PZ" in *'"matched": true'*) P "/policyz resolves a policy";; *) F "/polic
 MX=$(curl -s "http://${HTTP}/metrics")
 case "$MX" in *elchi_shield_build_info*) P "/metrics has build_info";; *) F "/metrics missing build_info";; esac
 case "$MX" in *go_goroutines*) P "/metrics has go_goroutines";; *) F "/metrics missing go_goroutines";; esac
+# findings_total attributes blocks/detections to the engine that produced them.
+case "$MX" in *'findings_total{action="block",engine="coraza"'*) P "/metrics findings_total has per-engine labels (coraza block)";; *) F "/metrics findings_total missing engine attribution";; esac
+case "$MX" in *'engine="bot"'*) P "/metrics findings_total attributes a bot block";; *) F "/metrics findings_total missing bot";; esac
 expect "/debug/pprof/" "$(curl -s -o /dev/null -w '%{http_code}' http://${HTTP}/debug/pprof/)" 200
 
 # ==================== PHASE 11: Config hot-reload ====================
@@ -370,6 +373,8 @@ echo
 echo "--- counters ---"
 COUNTERS="$(curl -s "http://${HTTP}/metrics" | grep -E '^elchi_shield_requests_(allowed|blocked)_total|^elchi_shield_detections_total|^elchi_shield_shadow_detections_total')"
 echo "$COUNTERS" | sed 's/^/    /'
+echo "    --- findings by engine ---"
+curl -s "http://${HTTP}/metrics" | grep -E '^elchi_shield_findings_total' | sort | sed 's/^/    /'
 
 # ---------------- HTML report ----------------
 # Render every recorded assertion (phase / rule / expected / got / result) into a

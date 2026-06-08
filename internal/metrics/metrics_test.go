@@ -132,3 +132,58 @@ func TestNilMetricsSafe(t *testing.T) {
 	m.RegisterStages([]string{"x"})
 	m.ForListener("l").RecordDecision(&decision.Decision{Action: decision.Block}, "request_headers", 0)
 }
+
+// gatherLabeled sums samples of a counter family matching the given label=value.
+func gatherLabeled(t *testing.T, m *Metrics, name, label, value string) float64 {
+	t.Helper()
+	fams, err := m.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := namespace + "_" + name
+	var sum float64
+	for _, f := range fams {
+		if f.GetName() != full {
+			continue
+		}
+		for _, mm := range f.GetMetric() {
+			for _, lp := range mm.GetLabel() {
+				if lp.GetName() == label && lp.GetValue() == value {
+					sum += mm.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return sum
+}
+
+func TestFindingsByEngine(t *testing.T) {
+	m := New("")
+	lm := m.ForListener("lst-1")
+	lm.RecordDecision(&decision.Decision{Action: decision.Block, Engine: "coraza"}, "request_body", time.Millisecond)
+	lm.RecordDecision(&decision.Decision{Action: decision.Block, Engine: "bot"}, "request_headers", time.Millisecond)
+	lm.RecordDecision(&decision.Decision{Action: decision.Detect, Engine: "bot"}, "request_headers", time.Millisecond)
+	lm.RecordDecision(&decision.Decision{Action: decision.Block, Engine: "no-such-engine"}, "request_headers", time.Millisecond)
+	lm.RecordDecision(&decision.Decision{Action: decision.Allow}, "request_headers", time.Millisecond) // no finding
+
+	if v := gatherLabeled(t, m, "findings_total", "engine", "coraza"); v != 1 {
+		t.Errorf("coraza findings = %v, want 1", v)
+	}
+	if v := gatherLabeled(t, m, "findings_total", "engine", "bot"); v != 2 {
+		t.Errorf("bot findings = %v, want 2 (1 block + 1 detect)", v)
+	}
+	if v := gatherLabeled(t, m, "findings_total", "action", "block"); v != 3 {
+		t.Errorf("block findings = %v, want 3", v)
+	}
+	if v := gatherLabeled(t, m, "findings_total", "action", "detect"); v != 1 {
+		t.Errorf("detect findings = %v, want 1", v)
+	}
+	// An unknown engine falls into the "other" bucket.
+	if v := gatherLabeled(t, m, "findings_total", "engine", "other"); v != 1 {
+		t.Errorf("other-engine findings = %v, want 1", v)
+	}
+	// Total findings = 4 (the allow produced none).
+	if v := gather(t, m, "findings_total"); v != 4 {
+		t.Errorf("total findings = %v, want 4", v)
+	}
+}
