@@ -291,3 +291,29 @@ func TestValidateInvalidSamplingRate(t *testing.T) {
 		t.Fatalf("want sampling_rate error, got %v", err)
 	}
 }
+
+func TestValidateGeoCountryOverlap(t *testing.T) {
+	doc := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - host: a.com
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              ip_reputation:
+                geoip:
+                  database_file: /tmp/x.mmdb
+                  block_countries: ["GB", "RU"]
+                  allow_countries: ["gb"]
+`
+	dir := writeFiles(t, map[string]string{"a.yaml": doc})
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "both block_countries and allow_countries") {
+		t.Fatalf("want block/allow overlap error, got %v", err)
+	}
+}

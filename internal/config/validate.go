@@ -435,6 +435,17 @@ func validateIPReputation(ir *IPReputationSpec, add func(field string, err error
 				add(fmt.Sprintf("engines.ip_reputation.geoip.countries[%d]", j), fmt.Errorf("invalid ISO country code %q (want 2 letters)", cc))
 			}
 		}
+		// A country in both block and allow is contradictory (block wins, so the
+		// allow entry is a silent no-op the operator likely didn't intend).
+		blocked := make(map[string]struct{}, len(g.BlockCountries))
+		for _, cc := range g.BlockCountries {
+			blocked[strings.ToUpper(cc)] = struct{}{}
+		}
+		for _, cc := range g.AllowCountries {
+			if _, dup := blocked[strings.ToUpper(cc)]; dup {
+				add("engines.ip_reputation.geoip", fmt.Errorf("country %q is in both block_countries and allow_countries", cc))
+			}
+		}
 		switch g.OnMissing {
 		case "", "continue", "block":
 		default:

@@ -80,8 +80,11 @@ cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG
 trap cleanup EXIT
 
 ECHO_ADDR=127.0.0.1:18080 "$DIR/echo.bin" & PIDS+=($!)
+# --xff-trusted-hops 1: the harness injects a test client IP as the leftmost XFF
+# token and Envoy appends the real downstream on the right, so one trusted hop
+# makes the shield read the injected IP. (Production default is 0 = rightmost.)
 "$DIR/elchi-shield.bin" --config-dir "$CFG" --extproc-network tcp --extproc-addr 127.0.0.1:9999 \
-  --http-addr "$HTTP" --watch-debounce 200ms --log-level error & PIDS+=($!)
+  --http-addr "$HTTP" --watch-debounce 200ms --xff-trusted-hops 1 --log-level error & PIDS+=($!)
 for _ in $(seq 1 40); do curl -sf "http://${HTTP}/readyz" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -sf "http://${HTTP}/readyz" >/dev/null 2>&1 || { echo "shield not ready"; exit 1; }
 

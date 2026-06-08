@@ -15,6 +15,10 @@ type Deps struct {
 	Detector SensitiveDataDetector
 	// Observer receives per-stage metrics/latency (nil → no-op).
 	Observer pipeline.Observer
+	// TrustedHops is the number of trusted reverse proxies in front of Envoy; it
+	// controls how the client IP is read from X-Forwarded-For (0 = the secure
+	// rightmost/immediate hop).
+	TrustedHops int
 }
 
 // DefaultRequestPipeline assembles the standard request filter chain in the
@@ -27,7 +31,7 @@ func DefaultRequestPipeline(d Deps) (*pipeline.Pipeline, error) {
 	return pipeline.NewBuilder("request").
 		WithObserver(d.Observer).
 		Add(
-			ContextInit(),
+			ContextInit(0),
 			PolicyResolve(),
 			FastPreChecks(),
 			EarlyDecision(d.DefaultAllow),
@@ -46,7 +50,7 @@ func DefaultResponsePipeline(d Deps) (*pipeline.Pipeline, error) {
 	return pipeline.NewBuilder("response").
 		WithObserver(d.Observer).
 		Add(
-			ContextInit(),
+			ContextInit(0),
 			FastPreChecks(),
 			BodyGate(),
 			BodyChecks(d.Detector),

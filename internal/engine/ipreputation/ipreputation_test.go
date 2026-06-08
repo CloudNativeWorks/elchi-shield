@@ -263,3 +263,51 @@ func TestMetadata(t *testing.T) {
 		t.Errorf("close: %v", err)
 	}
 }
+
+func TestIPv4MappedIPv6Unmapped(t *testing.T) {
+	// A 4-in-6 source must match an IPv4 deny CIDR (canonicalized via Unmap).
+	e, err := New(Config{DenyCIDRs: []string{"192.0.2.0/24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := mustInspect(t, e, "::ffff:192.0.2.50"); v.Action != decision.Block {
+		t.Fatal("IPv4-mapped IPv6 source must match the IPv4 deny CIDR")
+	}
+}
+
+func TestAllowListShortCircuitsFeeds(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "feed.txt")
+	if err := os.WriteFile(fp, []byte("10.0.0.0/8\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// An allow-listed IP that ALSO matches a threat feed must pass (allow is a
+	// trust list that short-circuits the softer feed signal).
+	e, err := New(Config{
+		AllowCIDRs: []string{"10.1.0.0/16"},
+		Feeds:      []FeedConfig{{Name: "f", File: fp, Format: "cidr_lines"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := mustInspect(t, e, "10.1.2.3"); v.Action == decision.Block {
+		t.Fatal("an allow-listed IP must short-circuit the feed and pass")
+	}
+	// A non-allow-listed IP is blocked by default-deny (before the feed even).
+	if v := mustInspect(t, e, "8.8.8.8"); v.Action != decision.Block {
+		t.Fatal("non-allow-listed IP should be blocked under default-deny")
+	}
+}
+
+func TestDenyStillBeatsAllowShortCircuit(t *testing.T) {
+	e, err := New(Config{
+		AllowCIDRs: []string{"10.0.0.0/8"},
+		DenyCIDRs:  []string{"10.6.6.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := mustInspect(t, e, "10.6.6.6"); v.RuleID != "ipreputation.deny_cidr" {
+		t.Fatalf("explicit deny must win over allow short-circuit, got %+v", v)
+	}
+}

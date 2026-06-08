@@ -94,6 +94,7 @@ type appConfig struct {
 	listenerID       string
 	maxBodyBytes     int64
 	maxInFlightBody  int64
+	trustedHops      int
 	debounce         time.Duration
 	defaultAllow     bool
 	auditExporter    string
@@ -283,6 +284,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 		DefaultAllow: cfg.defaultAllow,
 		Observer:     m,
 		Detector:     sensitive.New(), // built-in PII/secret scanner for detect_sensitive_data
+		TrustedHops:  cfg.trustedHops,
 	})
 	m.RegisterStages(catalog.StageNames())
 
@@ -461,6 +463,7 @@ func parseFlags(args []string) appConfig {
 	fs.BoolVar(&cfg.allowNonLoopback, "allow-non-loopback", envBool("ELCHI_SHIELD_ALLOW_NON_LOOPBACK", false), "DANGEROUS: permit binding TCP to non-loopback addresses (exposes the sidecar)")
 	fs.StringVar(&cfg.listenerID, "listener-id", env("ELCHI_SHIELD_LISTENER_ID", ""), "Envoy listener id this instance serves (optional scope)")
 	fs.Int64Var(&cfg.maxBodyBytes, "max-body-bytes", envInt64("ELCHI_SHIELD_MAX_BODY_BYTES", 1<<20), "hard fallback body cap when a policy specifies none")
+	fs.IntVar(&cfg.trustedHops, "xff-trusted-hops", int(envInt64("ELCHI_SHIELD_XFF_TRUSTED_HOPS", 0)), "trusted reverse proxies in front of Envoy; the client IP is read this many hops in from the right of X-Forwarded-For (0 = the immediate hop Envoy appends, the secure default — never trust the spoofable leftmost token)")
 	fs.Int64Var(&cfg.maxInFlightBody, "max-inflight-body-bytes", envInt64("ELCHI_SHIELD_MAX_INFLIGHT_BODY_BYTES", 256<<20), "cap on total body bytes buffered across all concurrent streams (0 = unbounded)")
 	fs.DurationVar(&cfg.debounce, "watch-debounce", envDuration("ELCHI_SHIELD_WATCH_DEBOUNCE", 300*time.Millisecond), "config watcher debounce window")
 	fs.BoolVar(&cfg.defaultAllow, "default-allow", envBool("ELCHI_SHIELD_DEFAULT_ALLOW", true), "posture when no policy matches: allow (true) or deny (false)")

@@ -44,9 +44,9 @@ func NewCatalog(deps Deps) *Catalog {
 	}
 	// Preludes are phase-ordered, so the validated constructor is used.
 	c.reqPrelude, _ = pipeline.New("request_prelude",
-		[]pipeline.Stage{ContextInit(), PolicyResolve(), EarlyDecision(deps.DefaultAllow)}, deps.Observer)
+		[]pipeline.Stage{ContextInit(deps.TrustedHops), PolicyResolve(), EarlyDecision(deps.DefaultAllow)}, deps.Observer)
 	c.respPre, _ = pipeline.New("response_prelude",
-		[]pipeline.Stage{ContextInit()}, deps.Observer)
+		[]pipeline.Stage{ContextInit(deps.TrustedHops)}, deps.Observer)
 	return c
 }
 
@@ -55,7 +55,7 @@ func NewCatalog(deps Deps) *Catalog {
 // recording.
 func (c *Catalog) StageNames() []string {
 	names := make([]string, 0, 7+len(c.inspectors))
-	names = append(names, ContextInit().Name(), PolicyResolve().Name(), EarlyDecision(false).Name(),
+	names = append(names, ContextInit(0).Name(), PolicyResolve().Name(), EarlyDecision(false).Name(),
 		c.bodyGate.Name(), c.bodyGuard.Name(), c.bodyDecode.Name(), c.wafHeader.Name())
 	for name := range c.inspectors {
 		names = append(names, name)

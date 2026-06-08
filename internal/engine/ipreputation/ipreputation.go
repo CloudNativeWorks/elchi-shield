@@ -200,11 +200,20 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 		}
 		return decision.Verdict{}, nil
 	}
+	// Canonicalize: an IPv4-in-IPv6 source (::ffff:1.2.3.4) must match IPv4 rules.
+	ip = ip.Unmap()
 
+	// Explicit deny always wins (a denied IP is blocked even if also allow-listed).
 	if e.hasDeny && e.deny.Contains(ip) {
 		return block("ipreputation.deny_cidr", "source IP in deny list", decision.SeverityHigh), nil
 	}
-	if e.hasAllow && !e.allow.Contains(ip) {
+	if e.hasAllow {
+		// allow_cidrs is a default-DENY trust list: an allow-listed (and not
+		// denied) IP is explicitly trusted and short-circuits the softer feed/geo
+		// signals; anything else is blocked.
+		if e.allow.Contains(ip) {
+			return decision.Verdict{}, nil
+		}
 		return block("ipreputation.not_allowlisted", "source IP not in allow list", decision.SeverityHigh), nil
 	}
 	if e.hasFeeds {

@@ -39,7 +39,7 @@ func TestContextInitDerivesAttributes(t *testing.T) {
 		":method", "POST",
 		"content-type", "application/json",
 	)}
-	ContextInit().Process(bg(), tx)
+	ContextInit(0).Process(bg(), tx)
 	if tx.Host != "api.example.com" || tx.Path != "/v1/x" || tx.Method != "POST" || tx.ContentType != "application/json" {
 		t.Fatalf("derivation failed: %+v", tx)
 	}
@@ -439,5 +439,49 @@ func TestDefaultRequestPipelineEndToEnd(t *testing.T) {
 	p, snap = build(config.ModeDetect)
 	if d := p.Run(bg(), mkTx(snap)); d.IsBlock() || d.Action != decision.Detect {
 		t.Fatalf("detect mode should allow+record, got %v block=%v", d.Action, d.IsBlock())
+	}
+}
+
+func txWithHeaders(pairs ...string) *pipeline.Transaction {
+	return &pipeline.Transaction{Headers: hdrs(pairs...)}
+}
+
+func TestClientIPTrustedHops(t *testing.T) {
+	// XFF = "spoofed, realclient" (Envoy appends the real client on the right).
+	tx := txWithHeaders("X-Forwarded-For", "203.0.113.9, 198.51.100.7")
+	// trustedHops=0 → rightmost (the address Envoy appended) — secure default.
+	if got := clientIP(tx, 0); got != "198.51.100.7" {
+		t.Fatalf("hops=0 should pick the rightmost, got %q", got)
+	}
+	// trustedHops=1 → one in from the right = the spoofable leftmost here.
+	if got := clientIP(tx, 1); got != "203.0.113.9" {
+		t.Fatalf("hops=1 should pick one-from-right, got %q", got)
+	}
+	// hops larger than the list clamps to the leftmost.
+	if got := clientIP(tx, 9); got != "203.0.113.9" {
+		t.Fatalf("over-large hops should clamp to leftmost, got %q", got)
+	}
+}
+
+func TestClientIPCanonicalization(t *testing.T) {
+	cases := map[string]string{
+		"::ffff:1.2.3.4":   "1.2.3.4",       // IPv4-in-IPv6 unmapped
+		"1.2.3.4:5678":     "1.2.3.4",       // ip:port stripped
+		"[2001:db8::1]:443": "2001:db8::1",  // ipv6:port stripped
+		"1.2.3.4":          "1.2.3.4",
+		"not-an-ip":        "",
+	}
+	for in, want := range cases {
+		tx := txWithHeaders("X-Real-IP", in)
+		if got := clientIP(tx, 0); got != want {
+			t.Errorf("canonIP(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestClientIPFallbackToRealIP(t *testing.T) {
+	tx := txWithHeaders("X-Real-IP", "203.0.113.5")
+	if got := clientIP(tx, 0); got != "203.0.113.5" {
+		t.Fatalf("should fall back to X-Real-IP, got %q", got)
 	}
 }

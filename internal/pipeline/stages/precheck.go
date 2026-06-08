@@ -7,6 +7,7 @@ package stages
 
 import (
 	"context"
+	"net/netip"
 	"net/url"
 	"path"
 	"strings"
@@ -32,16 +33,20 @@ const builtinEngine = "builtin"
 
 // contextInit derives request attributes (host, path, method, content-type) from
 // the (pseudo-)headers if the transport layer did not already set them. It is
-// idempotent so the ext_proc server may pre-fill fields.
-type contextInit struct{}
+// idempotent so the ext_proc server may pre-fill fields. trustedHops is the
+// number of trusted reverse proxies in front of this Envoy, used to pick the
+// real client IP from X-Forwarded-For.
+type contextInit struct{ trustedHops int }
 
-// ContextInit returns the context-initialization stage.
-func ContextInit() pipeline.Stage { return contextInit{} }
+// ContextInit returns the context-initialization stage. trustedHops controls how
+// the client IP is read from X-Forwarded-For (0 = the rightmost/immediate hop,
+// the secure default; N = the Nth hop in from the right).
+func ContextInit(trustedHops int) pipeline.Stage { return contextInit{trustedHops: trustedHops} }
 
 func (contextInit) Name() string          { return "context_init" }
 func (contextInit) Phase() pipeline.Phase { return pipeline.PhasePreCheck }
 
-func (contextInit) Process(_ context.Context, tx *pipeline.Transaction) pipeline.StageResult {
+func (ci contextInit) Process(_ context.Context, tx *pipeline.Transaction) pipeline.StageResult {
 	if tx.ContentType == "" {
 		if v, ok := tx.Header("content-type"); ok {
 			tx.ContentType = v
@@ -68,25 +73,58 @@ func (contextInit) Process(_ context.Context, tx *pipeline.Transaction) pipeline
 		}
 	}
 	if tx.SourceIP == "" {
-		tx.SourceIP = clientIP(tx)
+		tx.SourceIP = clientIP(tx, ci.trustedHops)
 	}
 	return pipeline.Continue()
 }
 
-// clientIP derives the originating client IP: the first hop of X-Forwarded-For,
-// else the X-Real-IP header. Empty when neither is present. This is the single
-// source of truth for the client IP (engines read tx.SourceIP, not raw headers).
-func clientIP(tx *pipeline.Transaction) string {
+// clientIP derives the originating client IP and returns it in canonical form.
+// It is the single source of truth for the client IP (engines read tx.SourceIP,
+// not raw headers).
+//
+// SECURITY: X-Forwarded-For is a list — each proxy APPENDS the address it
+// received the connection from, so the rightmost entries are added by trusted
+// infrastructure and the leftmost is attacker-controlled. With trustedHops=N
+// (the number of trusted proxies in front of this Envoy) we take the entry N
+// positions in from the right; the secure default (0) is the rightmost hop, the
+// address Envoy itself appended via use_remote_address. Reading the leftmost
+// token (the old behavior) lets a client spoof its source IP by sending its own
+// X-Forwarded-For header, bypassing every source-IP control.
+func clientIP(tx *pipeline.Transaction, trustedHops int) string {
 	if v, ok := tx.Header("x-forwarded-for"); ok && v != "" {
-		if i := strings.IndexByte(v, ','); i >= 0 {
-			v = v[:i]
+		toks := strings.Split(v, ",")
+		idx := len(toks) - 1 - trustedHops
+		if idx < 0 {
+			idx = 0
 		}
-		return strings.TrimSpace(v)
+		if ip := canonIP(strings.TrimSpace(toks[idx])); ip != "" {
+			return ip
+		}
 	}
 	if v, ok := tx.Header("x-real-ip"); ok {
-		return strings.TrimSpace(v)
+		if ip := canonIP(strings.TrimSpace(v)); ip != "" {
+			return ip
+		}
 	}
 	return ""
+}
+
+// canonIP returns the canonical string form of an IP: it tolerates an ip:port
+// form, strips an IPv6 zone, and UNMAPS an IPv4-in-IPv6 address (::ffff:1.2.3.4 →
+// 1.2.3.4) so a 4-in-6 source can't dodge an IPv4 deny/allow rule. Returns ""
+// for anything that isn't a valid IP.
+func canonIP(s string) string {
+	if s == "" {
+		return ""
+	}
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap().WithZone("").String()
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return ""
+	}
+	return a.Unmap().WithZone("").String()
 }
 
 // policyResolve looks up the effective policy from the pinned snapshot and
