@@ -268,6 +268,12 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 				add("engines.xfcc", errors.New("require_present or at least one allow-list dimension is required"))
 			}
 		}
+		if g := s.Engines.GraphQL; g != nil {
+			if g.MaxDepth == 0 && g.MaxAliases == 0 && g.MaxRootFields == 0 && g.MaxTotalFields == 0 &&
+				g.MaxOperations == 0 && !g.BlockIntrospection {
+				add("engines.graphql", errors.New("at least one limit (max_depth/max_aliases/max_root_fields/max_total_fields/max_operations) or block_introspection is required"))
+			}
+		}
 	}
 	return errs
 }

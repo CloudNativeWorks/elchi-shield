@@ -1,0 +1,33 @@
+# Example policy using the built-in GraphQL guard. It runs at the body phase,
+# parses the query once, and enforces abuse limits — depth, aliases, root/total
+# fields, batched-operation count, and an introspection block — with a
+# fragment-cycle bound so the guard can't be DoS'd. Only POST requests with a
+# GraphQL content-type are inspected; everything else passes through.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-graphql
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_close
+
+  domains:
+    - host: "graph.example.com"
+      listener_id: "lst-graph-443"
+      routes:
+        - match:
+            path_prefix: "/graphql"
+          policy:
+            mode: block
+            engines:
+              graphql:
+                content_types: ["application/json", "application/graphql"]
+                paths: ["/graphql"]      # optional; restrict to the GraphQL endpoint
+                max_depth: 10            # reject deeply-nested queries
+                max_aliases: 15          # alias-overload (response amplification)
+                max_root_fields: 20
+                max_total_fields: 500
+                max_operations: 10       # batched-array cap
+                max_fragment_depth: 32   # fragment-cycle bound
+                block_introspection: true

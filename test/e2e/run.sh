@@ -233,6 +233,17 @@ req GET /xfcc "$AH" -H 'x-test-client-cert: DNS=client.example.com';            
 req GET /xfcc "$AH" -H 'x-test-client-cert: URI=spiffe://cluster/ns/evil/sa/x';   expect "XFCC identity not allow-listed → 403" "$CODE" 403
 req GET /xfcc "$AH";                                        expect "XFCC required but absent → 403" "$CODE" 403
 
+# ==================== PHASE 5f: Engine — GraphQL guard ====================
+phase "Engine: GraphQL guard"
+GQ='Content-Type: application/json'
+req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a b }"}';                         expect "simple query → 200" "$CODE" 200
+req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a { b { c { d { e } } } } }"}';   expect "depth > 4 → 403" "$CODE" 403
+req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ __schema { types { name } } }"}'; expect "introspection → 403" "$CODE" 403
+req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a: f b: f c: f d: f }"}';         expect "aliases > 3 → 403" "$CODE" 403
+req POST /graphql "$AH" -H "$GQ" --data '[{"query":"{a}"},{"query":"{b}"},{"query":"{c}"}]'; expect "batch > 2 → 403" "$CODE" 403
+req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a {"}';                           expect "malformed query → 403" "$CODE" 403
+req POST /graphql "$AH" -H 'Content-Type: text/plain' --data 'not graphql';           expect "non-GraphQL content-type → passthrough (200)" "$CODE" 200
+
 # ==================== PHASE 6: Engines — Coraza WAF ====================
 phase "Engine: Coraza WAF (-tags coraza)"
 req POST /waf "$AH" -H 'Content-Type: text/plain' --data 'q=1 union select password from users'; expect "SQLi (union select) → 403" "$CODE" 403

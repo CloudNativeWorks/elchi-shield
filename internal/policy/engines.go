@@ -9,6 +9,7 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/apikey"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/bot"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/graphql"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/hmacsign"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/httpsig"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ipreputation"
@@ -183,6 +184,24 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 		})
 		if err != nil {
 			return nil, fmt.Errorf("xfcc engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
+	if g := spec.GraphQL; g != nil {
+		e, err := graphql.New(graphql.Config{
+			ContentTypes:       g.ContentTypes,
+			Paths:              g.Paths,
+			MaxDepth:           g.MaxDepth,
+			MaxAliases:         g.MaxAliases,
+			MaxRootFields:      g.MaxRootFields,
+			MaxTotalFields:     g.MaxTotalFields,
+			MaxOperations:      g.MaxOperations,
+			BlockIntrospection: g.BlockIntrospection,
+			MaxFragmentDepth:   g.MaxFragmentDepth,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("graphql engine: %w", err)
 		}
 		engines = append(engines, e)
 	}

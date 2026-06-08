@@ -176,6 +176,17 @@ spec:
                 require_present: true
                 uris: ["spiffe://cluster/ns/team/sa/web"]
                 dns_names: ["client.example.com"]
+        # GraphQL guard (body-phase): depth/alias/root-field/batch/introspection.
+        - match: { path_prefix: "/graphql" }
+          policy:
+            mode: block
+            engines:
+              graphql:
+                max_depth: 4
+                max_aliases: 3
+                max_root_fields: 5
+                max_operations: 2
+                block_introspection: true
         - match: { path_prefix: "/waf" }
           policy:
             mode: block

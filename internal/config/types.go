@@ -223,6 +223,21 @@ type EnginesSpec struct {
 	HTTPSignature *HTTPSignatureSpec `yaml:"http_signature" json:"http_signature"`
 	JWKS          *JWKSSpec          `yaml:"jwks" json:"jwks"`
 	XFCC          *XFCCSpec          `yaml:"xfcc" json:"xfcc"`
+	GraphQL       *GraphQLSpec       `yaml:"graphql" json:"graphql"`
+}
+
+// GraphQLSpec configures the body-phase GraphQL guard. A zero limit disables that
+// check.
+type GraphQLSpec struct {
+	ContentTypes       []string `yaml:"content_types" json:"content_types"`
+	Paths              []string `yaml:"paths" json:"paths"`
+	MaxDepth           int      `yaml:"max_depth" json:"max_depth"`
+	MaxAliases         int      `yaml:"max_aliases" json:"max_aliases"`
+	MaxRootFields      int      `yaml:"max_root_fields" json:"max_root_fields"`
+	MaxTotalFields     int      `yaml:"max_total_fields" json:"max_total_fields"`
+	MaxOperations      int      `yaml:"max_operations" json:"max_operations"`
+	BlockIntrospection bool     `yaml:"block_introspection" json:"block_introspection"`
+	MaxFragmentDepth   int      `yaml:"max_fragment_depth" json:"max_fragment_depth"`
 }
 
 // JWKSSpec configures the header-phase JWKS JWT engine. Keys come from a local
