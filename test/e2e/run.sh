@@ -46,6 +46,8 @@ sed "s#__CFG__#${CFG}#g" "$DIR/policy/e2e.yaml" > "$CFG/e2e.yaml"
 printf '# e2e threat feed\n198.51.100.0/24\n2001:db8:bad::/48\n' > "$CFG/threat-feed.txt"
 # MaxMind test Country DB for the GeoIP cases (81.2.69.142→GB, 89.160.20.128→SE).
 cp "$ROOT/internal/geoip/testdata/GeoLite2-Country-Test.mmdb" "$CFG/geo-country.mmdb"
+# Verified-bot IP feed for the bot engine (a Googlebot range).
+printf '# googlebot ranges\n66.249.64.0/19\n' > "$CFG/googlebot.txt"
 PIDS=()
 cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/gentoken.bin" "$DIR/echo.bin" "$ROWS" /tmp/eh /tmp/eb /tmp/*.gz /tmp/good.zz; }
 trap cleanup EXIT
@@ -63,6 +65,7 @@ else echo "no Envoy (install func-e or set ENVOY=...)"; exit 1; fi
 for _ in $(seq 1 60); do curl -s -o /dev/null "$(H api.example.com)" "http://127.0.0.1:${PORT}/off" 2>/dev/null && break; sleep 0.25; done
 
 AH="$(H api.example.com)"
+BROWSER='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 # JWT tokens
 VALID=$("$DIR/gentoken.bin" -secret e2e-secret -aud api -sub u1 -exp 3600)
 EXPIRED=$("$DIR/gentoken.bin" -secret e2e-secret -aud api -sub u1 -exp -10)
@@ -171,6 +174,19 @@ req GET /ip-feed  "$AH" -H 'X-Forwarded-For: 198.51.100.7';  expect "threat-feed
 req GET /ip-feed  "$AH" -H 'X-Forwarded-For: 1.1.1.1';       expect "threat-feed miss → 200" "$CODE" 200
 req GET /ip-geo   "$AH" -H 'X-Forwarded-For: 81.2.69.142';   expect "GeoIP blocked country (GB) → 403" "$CODE" 403
 req GET /ip-geo   "$AH" -H 'X-Forwarded-For: 89.160.20.128'; expect "GeoIP other country (SE) → 200" "$CODE" 200
+
+# ==================== PHASE 5c: Engine — Bot detection ====================
+phase "Engine: Bot detection"
+AL='Accept-Language: en-US'
+req GET /bot "$AH" -A 'python-requests/2.28' -H "$AL";  expect "UA deny (python-requests) → 403" "$CODE" 403
+req GET /bot "$AH" -A 'curl/8.1.2' -H "$AL";            expect "UA deny (curl) → 403" "$CODE" 403
+req GET /bot "$AH" -A '' -H "$AL";                      expect "empty User-Agent → 403" "$CODE" 403
+req GET /bot "$AH" -A "$BROWSER" -H "$AL";              expect "clean browser → 200" "$CODE" 200
+req GET /bot "$AH" -A 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' -H 'X-Forwarded-For: 66.249.64.10' -H "$AL"; expect "verified Googlebot → 200" "$CODE" 200
+req GET /bot "$AH" -A 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' -H 'X-Forwarded-For: 1.2.3.4' -H "$AL";       expect "Googlebot impersonation → 403" "$CODE" 403
+req GET /bot "$AH" -A "$BROWSER" -H 'x-shield-ja4: t13d-known-bad-ja4' -H "$AL"; expect "denied JA4 fingerprint → 403" "$CODE" 403
+req GET /bot "$AH" -A "$BROWSER" -H 'x-shield-ja4: t13d-curl-tool-ja4' -H "$AL"; expect "JA4 tool vs browser-UA mismatch → 403" "$CODE" 403
+req GET /bot "$AH" -A "$BROWSER";                       expect "missing Accept-Language heuristic → 403" "$CODE" 403
 
 # ==================== PHASE 6: Engines — Coraza WAF ====================
 phase "Engine: Coraza WAF (-tags coraza)"

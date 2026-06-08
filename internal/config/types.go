@@ -217,6 +217,53 @@ type EnginesSpec struct {
 	Coraza       *CorazaSpec       `yaml:"coraza" json:"coraza"`
 	RateLimit    *RateLimitSpec    `yaml:"rate_limit" json:"rate_limit"`
 	IPReputation *IPReputationSpec `yaml:"ip_reputation" json:"ip_reputation"`
+	Bot          *BotSpec          `yaml:"bot" json:"bot"`
+}
+
+// BotSpec configures the header-phase bot/scanner detection engine: a layered
+// scorer over User-Agent, verified-crawler IP checks, JA3/JA4 TLS fingerprints
+// (supplied by Envoy as headers), and header-anomaly heuristics.
+type BotSpec struct {
+	// ScoreThreshold blocks when the accumulated score reaches it (0 disables
+	// score-based blocking; hard-block layers still apply).
+	ScoreThreshold int                `yaml:"score_threshold" json:"score_threshold"`
+	UserAgent      *BotUASpec         `yaml:"user_agent" json:"user_agent"`
+	VerifiedBots   []BotVerifiedSpec  `yaml:"verified_bots" json:"verified_bots"`
+	TLSFingerprint *BotTLSSpec        `yaml:"tls_fingerprint" json:"tls_fingerprint"`
+	Heuristics     *BotHeuristicsSpec `yaml:"heuristics" json:"heuristics"`
+}
+
+// BotUASpec configures the User-Agent layer.
+type BotUASpec struct {
+	DenySubstrings []string `yaml:"deny_substrings" json:"deny_substrings"`
+	BlockEmpty     bool     `yaml:"block_empty" json:"block_empty"`
+	ScoreKnownBot  int      `yaml:"score_known_bot" json:"score_known_bot"`
+}
+
+// BotVerifiedSpec declares a crawler whose claim is verified against an IP feed.
+type BotVerifiedSpec struct {
+	Name    string `yaml:"name" json:"name"`
+	File    string `yaml:"file" json:"file"`
+	Format  string `yaml:"format" json:"format"`
+	UAMatch string `yaml:"ua_match" json:"ua_match"`
+}
+
+// BotTLSSpec configures the JA3/JA4 fingerprint layer.
+type BotTLSSpec struct {
+	JA4Header string         `yaml:"ja4_header" json:"ja4_header"`
+	JA3Header string         `yaml:"ja3_header" json:"ja3_header"`
+	DenyJA4   []string       `yaml:"deny_ja4" json:"deny_ja4"`
+	DenyJA3   []string       `yaml:"deny_ja3" json:"deny_ja3"`
+	ScoreJA4  map[string]int `yaml:"score_ja4" json:"score_ja4"`
+	ToolJA4   []string       `yaml:"tool_ja4" json:"tool_ja4"`
+}
+
+// BotHeuristicsSpec configures the header-anomaly layer.
+type BotHeuristicsSpec struct {
+	RequireAccept         bool `yaml:"require_accept" json:"require_accept"`
+	RequireAcceptLanguage bool `yaml:"require_accept_language" json:"require_accept_language"`
+	RequireAcceptEncoding bool `yaml:"require_accept_encoding" json:"require_accept_encoding"`
+	ScorePerAnomaly       int  `yaml:"score_per_anomaly" json:"score_per_anomaly"`
 }
 
 // IPReputationSpec configures the header-phase IP-reputation engine: static CIDR

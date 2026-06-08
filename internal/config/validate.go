@@ -237,8 +237,43 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 		if ir := s.Engines.IPReputation; ir != nil {
 			validateIPReputation(ir, add)
 		}
+		if b := s.Engines.Bot; b != nil {
+			validateBot(b, add)
+		}
 	}
 	return errs
+}
+
+// validateBot checks the bot-detection engine config: verified-bot feeds need a
+// name/file/format/ua_match (a valid regex), and at least one detection layer
+// must be configured.
+func validateBot(b *BotSpec, add func(field string, err error)) {
+	hasLayer := (b.UserAgent != nil && (len(b.UserAgent.DenySubstrings) > 0 || b.UserAgent.BlockEmpty || b.UserAgent.ScoreKnownBot > 0)) ||
+		len(b.VerifiedBots) > 0 ||
+		(b.TLSFingerprint != nil && (len(b.TLSFingerprint.DenyJA4) > 0 || len(b.TLSFingerprint.DenyJA3) > 0 || len(b.TLSFingerprint.ToolJA4) > 0 || len(b.TLSFingerprint.ScoreJA4) > 0)) ||
+		(b.Heuristics != nil && b.Heuristics.ScorePerAnomaly > 0)
+	if !hasLayer {
+		add("engines.bot", errors.New("at least one detection layer (user_agent, verified_bots, tls_fingerprint, or heuristics) is required"))
+	}
+	for i, vb := range b.VerifiedBots {
+		p := fmt.Sprintf("engines.bot.verified_bots[%d]", i)
+		if vb.Name == "" {
+			add(p+".name", errors.New("required"))
+		}
+		if vb.File == "" {
+			add(p+".file", errors.New("required"))
+		}
+		switch vb.Format {
+		case "cidr_lines", "firehol_netset", "spamhaus_json":
+		default:
+			add(p+".format", fmt.Errorf("invalid format %q (want cidr_lines|firehol_netset|spamhaus_json)", vb.Format))
+		}
+		if vb.UAMatch == "" {
+			add(p+".ua_match", errors.New("required"))
+		} else if _, err := regexp.Compile(vb.UAMatch); err != nil {
+			add(p+".ua_match", fmt.Errorf("invalid regex: %w", err))
+		}
+	}
 }
 
 // validateIPReputation checks the IP-reputation engine config: CIDRs must parse,

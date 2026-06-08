@@ -1,0 +1,74 @@
+# Example policies using the built-in bot/scanner detection engine. It runs at
+# the cheap header phase (never buffers the body) and is a LAYERED SCORER —
+# cheapest decisive signal first; any layer may hard-block, and the accumulated
+# score blocks at score_threshold.
+#
+# Layers:
+#   1. verified_bots  a UA claiming a crawler is checked against that crawler's
+#                     published IP ranges (a feed file). Verified → allow; a claim
+#                     from an IP outside the ranges → impersonation hard-block.
+#   2. user_agent     deny-substrings and (optionally) an empty UA hard-block; a
+#                     known-bot UA contributes score_known_bot to the score.
+#   3. tls_fingerprint JA3/JA4 hashes that Envoy computes and forwards as request
+#                     headers. deny_* hard-blocks; score_ja4 contributes; a
+#                     "tool" JA4 with a browser UA is an inconsistency hard-block.
+#   4. heuristics     missing Accept / Accept-Language / Accept-Encoding each add
+#                     score_per_anomaly.
+#
+# Envoy setup for the TLS layer: enable JA4 fingerprinting on the TLS inspector
+# and forward the filter-state value into a request header (e.g. x-shield-ja4).
+# If the header is absent, the TLS layer simply no-ops (no false blocks).
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-bot
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open
+
+  domains:
+    - host: "shop.example.com"
+      listener_id: "lst-public-443"
+      routes:
+        - match:
+            path_prefix: "/"
+          policy:
+            # Start in detect mode to size the score threshold before enforcing.
+            mode: detect
+            engines:
+              bot:
+                score_threshold: 100
+                user_agent:
+                  deny_substrings:
+                    - "sqlmap"
+                    - "nikto"
+                    - "masscan"
+                    - "python-requests"
+                    - "Go-http-client"
+                  block_empty: true
+                  score_known_bot: 40
+                verified_bots:
+                  # Verified crawlers are allow-listed; impersonators are blocked.
+                  - name: googlebot
+                    file: "/etc/elchi/elchi-shield/feeds/googlebot.json"
+                    format: cidr_lines
+                    ua_match: "(?i)googlebot|google-inspectiontool"
+                  - name: bingbot
+                    file: "/etc/elchi/elchi-shield/feeds/bingbot.json"
+                    format: cidr_lines
+                    ua_match: "(?i)bingbot"
+                tls_fingerprint:
+                  ja4_header: "x-shield-ja4"
+                  deny_ja4:
+                    - "t13d1516h2_8daaf6152771_b186095e22b6"   # example known-bad
+                  tool_ja4:
+                    # curl/python/Go JA4s: presenting one with a browser UA is a lie.
+                    - "t13d1715h2_5b57614c22b0_3d5424432f57"
+                  score_ja4:
+                    "t13d1516h2_8daaf6152771_b0da82dd1658": 60
+                heuristics:
+                  require_accept: true
+                  require_accept_language: true
+                  require_accept_encoding: true
+                  score_per_anomaly: 30

@@ -104,6 +104,27 @@ spec:
                 geoip:
                   database_file: "__CFG__/geo-country.mmdb"
                   block_countries: ["GB"]
+
+        # Bot detection (header-phase, layered scorer). JA3/JA4 arrive as Envoy-
+        # supplied headers (x-shield-ja4); the harness sets them directly.
+        - match: { path_prefix: "/bot" }
+          policy:
+            mode: block
+            engines:
+              bot:
+                score_threshold: 100
+                user_agent:
+                  deny_substrings: ["sqlmap", "nikto", "python-requests", "curl/", "Go-http-client"]
+                  block_empty: true
+                  score_known_bot: 50
+                verified_bots:
+                  - { name: googlebot, file: "__CFG__/googlebot.txt", format: cidr_lines, ua_match: "(?i)googlebot" }
+                tls_fingerprint:
+                  deny_ja4: ["t13d-known-bad-ja4"]
+                  tool_ja4: ["t13d-curl-tool-ja4"]
+                heuristics:
+                  require_accept_language: true
+                  score_per_anomaly: 100
         - match: { path_prefix: "/waf" }
           policy:
             mode: block

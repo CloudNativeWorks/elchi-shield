@@ -7,6 +7,7 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/bot"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ipreputation"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwt"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ratelimit"
@@ -110,6 +111,14 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 		engines = append(engines, e)
 	}
 
+	if b := spec.Bot; b != nil {
+		e, err := buildBot(b)
+		if err != nil {
+			return nil, fmt.Errorf("bot engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
 	if len(engines) == 0 {
 		return nil, nil
 	}
@@ -145,6 +154,46 @@ func buildIPReputation(ir *config.IPReputationSpec) (engine.SecurityEngine, erro
 		Feeds:      feeds,
 		Geo:        geo,
 	})
+}
+
+// buildBot constructs the bot-detection engine, loading any verified-bot IP
+// feeds from disk (cold path).
+func buildBot(b *config.BotSpec) (engine.SecurityEngine, error) {
+	cfg := bot.Config{ScoreThreshold: b.ScoreThreshold}
+	if ua := b.UserAgent; ua != nil {
+		cfg.UA = bot.UAConfig{
+			DenySubstrings: ua.DenySubstrings,
+			BlockEmpty:     ua.BlockEmpty,
+			ScoreKnownBot:  ua.ScoreKnownBot,
+		}
+	}
+	for _, vb := range b.VerifiedBots {
+		cfg.VerifiedBots = append(cfg.VerifiedBots, bot.VerifiedBotConfig{
+			Name:    vb.Name,
+			File:    vb.File,
+			Format:  vb.Format,
+			UAMatch: vb.UAMatch,
+		})
+	}
+	if t := b.TLSFingerprint; t != nil {
+		cfg.TLS = bot.TLSConfig{
+			JA4Header: t.JA4Header,
+			JA3Header: t.JA3Header,
+			DenyJA4:   t.DenyJA4,
+			DenyJA3:   t.DenyJA3,
+			ScoreJA4:  t.ScoreJA4,
+			ToolJA4:   t.ToolJA4,
+		}
+	}
+	if h := b.Heuristics; h != nil {
+		cfg.Heuristics = bot.HeuristicsConfig{
+			RequireAccept:         h.RequireAccept,
+			RequireAcceptLanguage: h.RequireAcceptLanguage,
+			RequireAcceptEncoding: h.RequireAcceptEncoding,
+			ScorePerAnomaly:       h.ScorePerAnomaly,
+		}
+	}
+	return bot.New(cfg)
 }
 
 // parseSeverity maps a config severity string to a decision.Severity (default
