@@ -1,0 +1,58 @@
+# Example policies using the built-in IP-reputation engine. It runs at the cheap
+# header phase (never buffers the body) and blocks by source IP using, in order:
+#   1. deny_cidrs   — explicit block list
+#   2. allow_cidrs  — when non-empty, the policy is default-DENY (an IP not in the
+#                     allow set is blocked)
+#   3. feeds        — threat-intelligence feed FILES (loaded from disk, never
+#                     fetched; the management plane writes them into the watched
+#                     config dir and an atomic reload recompiles them)
+#
+# The client IP is the single derived tx.SourceIP (first X-Forwarded-For token /
+# X-Real-IP). Feeds are parsed once at config load into a lock-free prefix trie,
+# so the hot path is an allocation-free longest-prefix lookup.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-ipreputation
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open
+
+  domains:
+    - host: "edge.example.com"
+      listener_id: "lst-edge-443"
+      routes:
+        # Block known-bad networks + a Spamhaus/FireHOL feed. A match is a 403.
+        - match:
+            path_prefix: "/v1/"
+          policy:
+            mode: block
+            engines:
+              ip_reputation:
+                deny_cidrs:
+                  - "192.0.2.0/24"
+                  - "198.51.100.7/32"
+                  - "2001:db8:bad::/48"
+                feeds:
+                  - name: spamhaus_drop
+                    file: "/etc/elchi/elchi-shield/feeds/spamhaus_drop.json"
+                    format: spamhaus_json     # cidr_lines | firehol_netset | spamhaus_json
+                    severity: high            # low | medium | high | critical
+                  - name: firehol_level1
+                    file: "/etc/elchi/elchi-shield/feeds/firehol_level1.netset"
+                    format: firehol_netset
+                    severity: medium
+
+        # Allow-list (default-DENY): only the corporate ranges may reach /admin.
+        # Any source IP outside allow_cidrs is blocked — start in detect mode to
+        # avoid locking yourself out, then switch to block.
+        - match:
+            path_prefix: "/admin/"
+          policy:
+            mode: detect
+            engines:
+              ip_reputation:
+                allow_cidrs:
+                  - "10.0.0.0/8"
+                  - "203.0.113.0/24"

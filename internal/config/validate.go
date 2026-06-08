@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"sort"
 	"strconv"
@@ -233,8 +234,48 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 				add("engines.rate_limit.header", errors.New("header is required when key is \"header\""))
 			}
 		}
+		if ir := s.Engines.IPReputation; ir != nil {
+			validateIPReputation(ir, add)
+		}
 	}
 	return errs
+}
+
+// validateIPReputation checks the IP-reputation engine config: CIDRs must parse,
+// and each feed needs a name, file, and a known format/severity.
+func validateIPReputation(ir *IPReputationSpec, add func(field string, err error)) {
+	for i, c := range ir.AllowCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			add(fmt.Sprintf("engines.ip_reputation.allow_cidrs[%d]", i), fmt.Errorf("invalid CIDR %q", c))
+		}
+	}
+	for i, c := range ir.DenyCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			add(fmt.Sprintf("engines.ip_reputation.deny_cidrs[%d]", i), fmt.Errorf("invalid CIDR %q", c))
+		}
+	}
+	if len(ir.AllowCIDRs) == 0 && len(ir.DenyCIDRs) == 0 && len(ir.Feeds) == 0 {
+		add("engines.ip_reputation", errors.New("at least one of allow_cidrs, deny_cidrs, or feeds is required"))
+	}
+	for i, f := range ir.Feeds {
+		p := fmt.Sprintf("engines.ip_reputation.feeds[%d]", i)
+		if f.Name == "" {
+			add(p+".name", errors.New("required"))
+		}
+		if f.File == "" {
+			add(p+".file", errors.New("required"))
+		}
+		switch f.Format {
+		case "cidr_lines", "firehol_netset", "spamhaus_json":
+		default:
+			add(p+".format", fmt.Errorf("invalid format %q (want cidr_lines|firehol_netset|spamhaus_json)", f.Format))
+		}
+		switch f.Severity {
+		case "", "low", "medium", "high", "critical":
+		default:
+			add(p+".severity", fmt.Errorf("invalid severity %q (want low|medium|high|critical)", f.Severity))
+		}
+	}
 }
 
 // validateMatch checks a route match predicate.

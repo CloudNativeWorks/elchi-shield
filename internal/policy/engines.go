@@ -5,7 +5,9 @@ import (
 	"os"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
+	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/ipreputation"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwt"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ratelimit"
 )
@@ -100,10 +102,52 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 		engines = append(engines, e)
 	}
 
+	if ir := spec.IPReputation; ir != nil {
+		e, err := buildIPReputation(ir)
+		if err != nil {
+			return nil, fmt.Errorf("ip_reputation engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
 	if len(engines) == 0 {
 		return nil, nil
 	}
 	return engine.NewSet(engines...), nil
+}
+
+// buildIPReputation constructs the IP-reputation engine, loading its feed files
+// from disk (cold path). A bad CIDR or unreadable feed aborts the reload.
+func buildIPReputation(ir *config.IPReputationSpec) (engine.SecurityEngine, error) {
+	feeds := make([]ipreputation.FeedConfig, 0, len(ir.Feeds))
+	for _, f := range ir.Feeds {
+		feeds = append(feeds, ipreputation.FeedConfig{
+			Name:     f.Name,
+			File:     f.File,
+			Format:   f.Format,
+			Severity: parseSeverity(f.Severity),
+		})
+	}
+	return ipreputation.New(ipreputation.Config{
+		AllowCIDRs: ir.AllowCIDRs,
+		DenyCIDRs:  ir.DenyCIDRs,
+		Feeds:      feeds,
+	})
+}
+
+// parseSeverity maps a config severity string to a decision.Severity (default
+// medium).
+func parseSeverity(s string) decision.Severity {
+	switch s {
+	case "low":
+		return decision.SeverityLow
+	case "high":
+		return decision.SeverityHigh
+	case "critical":
+		return decision.SeverityCritical
+	default:
+		return decision.SeverityMedium
+	}
 }
 
 // buildRateLimit constructs the rate-limit engine from its config.

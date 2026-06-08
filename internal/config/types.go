@@ -213,9 +213,36 @@ type PipelineSpec struct {
 
 // EnginesSpec configures the pluggable security engines that run for a policy.
 type EnginesSpec struct {
-	JWT       *JWTSpec       `yaml:"jwt" json:"jwt"`
-	Coraza    *CorazaSpec    `yaml:"coraza" json:"coraza"`
-	RateLimit *RateLimitSpec `yaml:"rate_limit" json:"rate_limit"`
+	JWT          *JWTSpec          `yaml:"jwt" json:"jwt"`
+	Coraza       *CorazaSpec       `yaml:"coraza" json:"coraza"`
+	RateLimit    *RateLimitSpec    `yaml:"rate_limit" json:"rate_limit"`
+	IPReputation *IPReputationSpec `yaml:"ip_reputation" json:"ip_reputation"`
+}
+
+// IPReputationSpec configures the header-phase IP-reputation engine: static CIDR
+// allow/deny lists plus disk-loaded threat-intelligence feeds.
+type IPReputationSpec struct {
+	// AllowCIDRs, when non-empty, makes the policy default-DENY: a source IP not
+	// matching any allow prefix is blocked. CIDR notation ("10.0.0.0/8").
+	AllowCIDRs []string `yaml:"allow_cidrs" json:"allow_cidrs"`
+	// DenyCIDRs are explicitly blocked prefixes.
+	DenyCIDRs []string `yaml:"deny_cidrs" json:"deny_cidrs"`
+	// Feeds are threat-intelligence feed files (treated as block lists).
+	Feeds []FeedSpec `yaml:"feeds" json:"feeds"`
+}
+
+// FeedSpec describes one threat-intelligence feed file consumed by the
+// IP-reputation engine.
+type FeedSpec struct {
+	// Name identifies the feed in block reasons and metrics.
+	Name string `yaml:"name" json:"name"`
+	// File is the path to the feed file (written by the management plane into the
+	// watched config directory; never fetched over the network).
+	File string `yaml:"file" json:"file"`
+	// Format selects the parser: "cidr_lines" | "firehol_netset" | "spamhaus_json".
+	Format string `yaml:"format" json:"format"`
+	// Severity ranks a match: "low" | "medium" | "high" | "critical" (default medium).
+	Severity string `yaml:"severity" json:"severity"`
 }
 
 // RateLimitSpec configures the per-key token-bucket rate-limit engine.
