@@ -61,6 +61,11 @@ spec:
             mode: block
             engines:
               jwt: { algorithms: ["HS256"], hmac_secret: "e2e-secret", audience: "api", required_claims: ["sub"] }
+        - match: { path_prefix: "/jwt-iss" }
+          policy:
+            mode: block
+            engines:
+              jwt: { algorithms: ["HS256"], hmac_secret: "e2e-secret", audience: "api", issuer: "https://issuer.example.com", required_claims: ["sub"] }
         - match: { path_prefix: "/rl-hdr" }
           policy:
             mode: block
@@ -71,6 +76,26 @@ spec:
             mode: block
             engines:
               rate_limit: { requests_per_second: 1, burst: 2, key: ip }
+        - match: { path_prefix: "/rl-host" }
+          policy:
+            mode: block
+            engines:
+              rate_limit: { requests_per_second: 1, burst: 1, key: host }
+
+        # IP reputation (header-phase, source-IP based). The harness sets the
+        # source IP via the first X-Forwarded-For token. __CFG__ is replaced by
+        # run.sh with the live config dir so the threat-feed file resolves.
+        - match: { path_prefix: "/ip-deny" }
+          policy: { mode: block, engines: { ip_reputation: { deny_cidrs: ["203.0.113.0/24"] } } }
+        - match: { path_prefix: "/ip-allow" }
+          policy: { mode: block, engines: { ip_reputation: { allow_cidrs: ["10.0.0.0/8"] } } }
+        - match: { path_prefix: "/ip-feed" }
+          policy:
+            mode: block
+            engines:
+              ip_reputation:
+                feeds:
+                  - { name: e2e_threat, file: "__CFG__/threat-feed.txt", format: cidr_lines, severity: high }
         - match: { path_prefix: "/waf" }
           policy:
             mode: block
@@ -81,7 +106,36 @@ spec:
                   SecRuleEngine On
                   SecRequestBodyAccess On
                   SecRule REQUEST_HEADERS:Content-Type "@rx ^" "id:1000,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
-                  SecRule REQUEST_BODY "@rx (?i)union\s+select" "id:1001,phase:2,deny,status:403,log,msg:'sqli'"
+                  SecRule REQUEST_HEADERS:User-Agent "@rx (?i)(sqlmap|nikto|nmap|masscan|acunetix)" "id:1001,phase:1,deny,status:403,log,msg:'scanner'"
+                  SecRule REQUEST_BODY "@rx (?i)union\s+select" "id:1002,phase:2,deny,status:403,log,msg:'sqli-union'"
+                  SecRule REQUEST_BODY "@rx (?i)\bor\b\s+1\s*=\s*1" "id:1003,phase:2,deny,status:403,log,msg:'sqli-or'"
+                  SecRule REQUEST_BODY "@rx (?i)<script" "id:1004,phase:2,deny,status:403,log,msg:'xss'"
+                  SecRule REQUEST_BODY "@rx (?:;|\||&&|\$\()\s*(?:cat|ls|wget|curl|nc|bash|sh)\b" "id:1005,phase:2,deny,status:403,log,msg:'cmdi'"
+                  SecRule REQUEST_BODY "@rx \.\./" "id:1006,phase:2,deny,status:403,log,msg:'traversal'"
+        # WAF in DetectionOnly: rules match but never interrupt → request allowed.
+        - match: { path_prefix: "/waf-detect" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              coraza:
+                directives: |
+                  SecRuleEngine DetectionOnly
+                  SecRequestBodyAccess On
+                  SecRule REQUEST_HEADERS:Content-Type "@rx ^" "id:1010,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+                  SecRule REQUEST_BODY "@rx (?i)union\s+select" "id:1011,phase:2,deny,status:403,log,msg:'sqli'"
+        # WAF on the RESPONSE body (phase:4) — blocks a leaked marker from upstream.
+        - match: { path_prefix: "/waf-resp" }
+          policy:
+            mode: block
+            inspect_response_body: true
+            engines:
+              coraza:
+                directives: |
+                  SecRuleEngine On
+                  SecResponseBodyAccess On
+                  SecResponseBodyMimeType text/plain text/html application/json
+                  SecRule RESPONSE_BODY "@rx CORAZA_RESP_HIT" "id:1020,phase:4,deny,status:403,log,msg:'resp-leak'"
 
         # Routing: method + content-type predicates (non-match falls to domain default off)
         - match: { path_prefix: "/method", methods: [POST] }
@@ -95,12 +149,25 @@ spec:
         - match: { path_prefix: "/p/" }
           policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
 
+        # skip_checks: the forbidden-header check is configured but skipped, so the
+        # otherwise-blocked X-Debug header passes.
+        - match: { path_prefix: "/skip" }
+          policy:
+            mode: block
+            skip_checks: ["forbidden_headers"]
+            checks: { headers: { forbidden: ["X-Debug"] } }
+
         # Response inspection
         - match: { path_prefix: "/resp" }
           policy:
             mode: block
             inspect_response_body: true
             checks: { body: { require_json: true } }
+        - match: { path_prefix: "/resp-pii" }
+          policy:
+            mode: block
+            inspect_response_body: true
+            checks: { body: { detect_sensitive_data: true } }
 
     # ---- A different exact host: monitor only (off) → proves host-specific routing. ----
     - host: "other.example.com"

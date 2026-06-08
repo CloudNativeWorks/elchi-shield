@@ -30,3 +30,5 @@ PLAN.md
 
 # e2e harness build artifacts (run.sh builds these per run, then cleans them up)
 test/e2e/*.bin
+# e2e HTML report (generated per run)
+test/e2e/report.html
