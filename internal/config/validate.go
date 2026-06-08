@@ -247,6 +247,14 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 		if h := s.Engines.HMACSign; h != nil {
 			validateHMACSign(h, add)
 		}
+		if hs := s.Engines.HTTPSignature; hs != nil {
+			if hs.Secret == "" {
+				add("engines.http_signature.secret", errors.New("required (hmac-sha256 shared secret)"))
+			}
+			if hs.MaxAge.AsDuration() < 0 {
+				add("engines.http_signature.max_age", errors.New("must be >= 0"))
+			}
+		}
 	}
 	return errs
 }

@@ -1,0 +1,24 @@
+// Package httpsig implements an RFC 9421 (HTTP Message Signatures) verification
+// engine. The real implementation depends on github.com/yaronf/httpsign and is
+// only compiled into a binary built with the `httpsig` build tag; the default
+// lean binary gets a stub whose constructor returns engine.ErrNotImplemented
+// (mirroring the Coraza WAF engine). See httpsig.go / stub.go.
+package httpsig
+
+import "time"
+
+// Config configures the RFC 9421 verification engine. The initial supported
+// algorithm is hmac-sha256 (shared secret).
+type Config struct {
+	// Secret is the shared HMAC key.
+	Secret string
+	// SignatureName is the label expected in Signature-Input (default "sig1").
+	SignatureName string
+	// CoveredComponents are the message components the signature must cover
+	// (default "@method", "@authority", "@path"). Derived components start with
+	// "@"; anything else is a header name.
+	CoveredComponents []string
+	// MaxAge rejects a signature whose `created` parameter is older than this
+	// (0 disables the age check).
+	MaxAge time.Duration
+}

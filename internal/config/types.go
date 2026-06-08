@@ -213,13 +213,29 @@ type PipelineSpec struct {
 
 // EnginesSpec configures the pluggable security engines that run for a policy.
 type EnginesSpec struct {
-	JWT          *JWTSpec          `yaml:"jwt" json:"jwt"`
-	Coraza       *CorazaSpec       `yaml:"coraza" json:"coraza"`
-	RateLimit    *RateLimitSpec    `yaml:"rate_limit" json:"rate_limit"`
-	IPReputation *IPReputationSpec `yaml:"ip_reputation" json:"ip_reputation"`
-	Bot          *BotSpec          `yaml:"bot" json:"bot"`
-	APIKey       *APIKeySpec       `yaml:"api_key" json:"api_key"`
-	HMACSign     *HMACSignSpec     `yaml:"hmac_sign" json:"hmac_sign"`
+	JWT           *JWTSpec           `yaml:"jwt" json:"jwt"`
+	Coraza        *CorazaSpec        `yaml:"coraza" json:"coraza"`
+	RateLimit     *RateLimitSpec     `yaml:"rate_limit" json:"rate_limit"`
+	IPReputation  *IPReputationSpec  `yaml:"ip_reputation" json:"ip_reputation"`
+	Bot           *BotSpec           `yaml:"bot" json:"bot"`
+	APIKey        *APIKeySpec        `yaml:"api_key" json:"api_key"`
+	HMACSign      *HMACSignSpec      `yaml:"hmac_sign" json:"hmac_sign"`
+	HTTPSignature *HTTPSignatureSpec `yaml:"http_signature" json:"http_signature"`
+}
+
+// HTTPSignatureSpec configures the RFC 9421 (HTTP Message Signatures) engine
+// (only usable in a binary built with the `httpsig` build tag). Initial support
+// is hmac-sha256.
+type HTTPSignatureSpec struct {
+	// Secret is the shared HMAC key.
+	Secret string `yaml:"secret" json:"secret"`
+	// SignatureName is the label expected in Signature-Input (default "sig1").
+	SignatureName string `yaml:"signature_name" json:"signature_name"`
+	// CoveredComponents are the components the signature must cover (default
+	// @method, @authority, @path).
+	CoveredComponents []string `yaml:"covered_components" json:"covered_components"`
+	// MaxAge rejects a signature whose `created` is older than this.
+	MaxAge Duration `yaml:"max_age" json:"max_age"`
 }
 
 // APIKeySpec configures the header-phase API-key authentication engine. Keys are

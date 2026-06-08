@@ -10,6 +10,7 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/apikey"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/bot"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/hmacsign"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/httpsig"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ipreputation"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwt"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ratelimit"
@@ -133,6 +134,19 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 		e, err := buildHMACSign(h)
 		if err != nil {
 			return nil, fmt.Errorf("hmac_sign engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
+	if hs := spec.HTTPSignature; hs != nil {
+		e, err := httpsig.New(httpsig.Config{
+			Secret:            hs.Secret,
+			SignatureName:     hs.SignatureName,
+			CoveredComponents: hs.CoveredComponents,
+			MaxAge:            hs.MaxAge.AsDuration(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("http_signature engine: %w", err)
 		}
 		engines = append(engines, e)
 	}

@@ -33,8 +33,9 @@ msum(){ curl -s "http://${HTTP}/metrics" | awk -v re="$1" '$0 ~ re {s+=$2} END{p
 H(){ printf -- '-HHost:%s' "$1"; }   # host header arg
 
 # ---------------- bring up the stack ----------------
-( cd "$ROOT" && go build -tags coraza -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
+( cd "$ROOT" && go build -tags "coraza httpsig" -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
 go build -o "$DIR/gentoken.bin" "$DIR/gentoken" || { echo "gentoken build failed"; exit 1; }
+go build -o "$DIR/gensig.bin" "$DIR/gensig" || { echo "gensig build failed"; exit 1; }
 # Build the echo to a binary (not `go run`) so the PID we track IS the listener —
 # `go run` leaves a child process holding the port that a kill of $! would miss.
 go build -o "$DIR/echo.bin" "$DIR/echo" || { echo "echo build failed"; exit 1; }
@@ -49,7 +50,7 @@ cp "$ROOT/internal/geoip/testdata/GeoLite2-Country-Test.mmdb" "$CFG/geo-country.
 # Verified-bot IP feed for the bot engine (a Googlebot range).
 printf '# googlebot ranges\n66.249.64.0/19\n' > "$CFG/googlebot.txt"
 PIDS=()
-cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/gentoken.bin" "$DIR/echo.bin" "$ROWS" /tmp/eh /tmp/eb /tmp/*.gz /tmp/good.zz; }
+cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/gentoken.bin" "$DIR/gensig.bin" "$DIR/echo.bin" "$ROWS" /tmp/eh /tmp/eb /tmp/*.gz /tmp/good.zz; }
 trap cleanup EXIT
 
 ECHO_ADDR=127.0.0.1:18080 "$DIR/echo.bin" & PIDS+=($!)
@@ -207,6 +208,15 @@ req GET /hmac "$AH" -H "X-Signature: $SIGO" -H "X-Timestamp: $OLD"; expect "stal
 NONCE="n-$TS"; SIGN=$(sig "$TS" "$NONCE" '')
 req GET /hmac "$AH" -H "X-Signature: $SIGN" -H "X-Timestamp: $TS" -H "X-Nonce: $NONCE"; expect "first nonce use → 200" "$CODE" 200
 req GET /hmac "$AH" -H "X-Signature: $SIGN" -H "X-Timestamp: $TS" -H "X-Nonce: $NONCE"; expect "replayed nonce → 403" "$CODE" 403
+# RFC 9421 (httpsig build tag): sign @method/@authority/@path with gensig.
+SIGSECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+SO=$("$DIR/gensig.bin" -secret "$SIGSECRET" -method GET -host api.example.com -path /sig)
+RSI=$(printf '%s\n' "$SO" | sed -n 1p); RSIG=$(printf '%s\n' "$SO" | sed -n 2p)
+req GET /sig "$AH" -H "Signature-Input: $RSI" -H "Signature: $RSIG"; expect "valid RFC 9421 signature → 200" "$CODE" 200
+req GET /sig "$AH";                                                   expect "missing RFC 9421 signature → 403" "$CODE" 403
+SO2=$("$DIR/gensig.bin" -secret "$SIGSECRET" -method GET -host api.example.com -path /other)
+RSI2=$(printf '%s\n' "$SO2" | sed -n 1p); RSIG2=$(printf '%s\n' "$SO2" | sed -n 2p)
+req GET /sig "$AH" -H "Signature-Input: $RSI2" -H "Signature: $RSIG2"; expect "signature for a different path → 403" "$CODE" 403
 
 # ==================== PHASE 6: Engines — Coraza WAF ====================
 phase "Engine: Coraza WAF (-tags coraza)"
