@@ -1,0 +1,65 @@
+# Example policy using the pluggable security engines (JWT) and per-policy stage
+# control. JWT is built into the default binary; Coraza requires a binary built
+# with `-tags coraza`.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-jwt
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_close   # auth failures should fail closed
+
+  domains:
+    - host: "secure.example.com"
+      listener_id: "lst-public-443"
+      routes:
+        # Protected API: every request must carry a valid JWT.
+        - match:
+            path_prefix: "/api/"
+          policy:
+            mode: block
+            engines:
+              jwt:
+                issuer: "https://auth.example.com/"
+                audience: "secure-api"
+                algorithms: ["RS256"]
+                public_key_file: "/etc/elchi-shield/keys/jwt-pub.pem"
+                required_claims: ["sub", "scope"]
+                # header_name defaults to Authorization (Bearer <token>)
+
+        # Health endpoint: keep only the fast header checks (omitting body_checks
+        # and waf_engine from the order disables them).
+        - match:
+            path_exact: "/healthz"
+            methods: [GET]
+          policy:
+            mode: detect
+            pipeline:
+              request: ["fast_pre_checks"]
+
+        # Custom order: run the WAF engine BEFORE the native body checks.
+        - match:
+            path_prefix: "/scan/"
+          policy:
+            mode: block
+            inspect_request_body: true
+            pipeline:
+              request: ["fast_pre_checks", "waf_engine", "body_checks"]
+
+        # Example Coraza WAF route (only active when built with -tags coraza).
+        - match:
+            path_prefix: "/upload/"
+          policy:
+            mode: block
+            inspect_request_body: true
+            max_request_body_bytes: 2097152   # 2 MiB
+            engines:
+              coraza:
+                include_owasp: false
+                directives: |
+                  SecRuleEngine On
+                  SecRequestBodyAccess On
+                  SecRule REQUEST_HEADERS:Content-Type "@rx ^application/json" \
+                    "id:100,phase:1,pass,t:lowercase"
+                exclude_rule_ids: ["920350"]

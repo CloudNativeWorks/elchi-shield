@@ -1,0 +1,111 @@
+# Comprehensive policy for the end-to-end harness (test/e2e/run.sh). Each route
+# exercises a specific capability/field; the harness fires real HTTP through a
+# real Envoy and asserts the decision per phase.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: e2e
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open
+    timeout: 500ms
+    max_request_body_bytes: 1048576
+
+  domains:
+    # ---- Main host: unmatched paths fall to this domain default (off → allow). ----
+    - host: "api.example.com"
+      policy: { mode: off }          # domain default: allow unmatched paths
+      routes:
+        # Decision modes
+        - match: { path_prefix: "/off" }
+          policy: { mode: off }
+        - match: { path_prefix: "/detect" }
+          policy: { mode: detect, checks: { headers: { forbidden: ["X-Debug"] } } }
+        - match: { path_prefix: "/shadow" }
+          policy: { mode: shadow, checks: { headers: { forbidden: ["X-Debug"] } } }
+
+        # Header checks (fast_pre_checks)
+        - match: { path_prefix: "/block-hdr" }
+          policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
+        - match: { path_prefix: "/req-hdr" }
+          policy: { mode: block, checks: { headers: { required: ["X-Custom-Req"] } } }
+        - match: { path_prefix: "/big-hdr" }
+          policy: { mode: block, checks: { headers: { max_header_value_bytes: 256 } } }
+
+        # Body checks (body phase)
+        - match: { path_prefix: "/json" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            checks: { body: { require_json: true } }
+        - match: { path_prefix: "/pii" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            checks: { body: { detect_sensitive_data: true } }
+        - match: { path_prefix: "/small" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            max_request_body_bytes: 16     # tiny → over-limit body is truncated → blocked
+        - match: { path_prefix: "/gzip" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            checks: { body: { require_json: true } }   # gzip is decoded, then JSON-validated
+
+        # Engines
+        - match: { path_prefix: "/jwt" }
+          policy:
+            mode: block
+            engines:
+              jwt: { algorithms: ["HS256"], hmac_secret: "e2e-secret", audience: "api", required_claims: ["sub"] }
+        - match: { path_prefix: "/rl-hdr" }
+          policy:
+            mode: block
+            engines:
+              rate_limit: { requests_per_second: 1, burst: 1, key: header, header: "X-Api-Key" }
+        - match: { path_prefix: "/rl" }
+          policy:
+            mode: block
+            engines:
+              rate_limit: { requests_per_second: 1, burst: 2, key: ip }
+        - match: { path_prefix: "/waf" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              coraza:
+                directives: |
+                  SecRuleEngine On
+                  SecRequestBodyAccess On
+                  SecRule REQUEST_HEADERS:Content-Type "@rx ^" "id:1000,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+                  SecRule REQUEST_BODY "@rx (?i)union\s+select" "id:1001,phase:2,deny,status:403,log,msg:'sqli'"
+
+        # Routing: method + content-type predicates (non-match falls to domain default off)
+        - match: { path_prefix: "/method", methods: [POST] }
+          policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
+        - match: { path_prefix: "/ct", content_type: ["application/json"] }
+          policy: { mode: block, inspect_request_body: true, checks: { body: { require_json: true } } }
+
+        # Path precedence: exact "/p/health" (off) beats prefix "/p/" (block)
+        - match: { path_exact: "/p/health" }
+          policy: { mode: off }
+        - match: { path_prefix: "/p/" }
+          policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
+
+        # Response inspection
+        - match: { path_prefix: "/resp" }
+          policy:
+            mode: block
+            inspect_response_body: true
+            checks: { body: { require_json: true } }
+
+    # ---- A different exact host: monitor only (off) → proves host-specific routing. ----
+    - host: "other.example.com"
+      policy: { mode: off }
+
+    # ---- Wildcard host: blocks X-Debug (exact api.example.com still beats it). ----
+    - host: "*.example.com"
+      policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }

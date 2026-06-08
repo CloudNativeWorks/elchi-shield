@@ -1,0 +1,119 @@
+name: Create Release
+
+# Manual release cut, mirroring the sibling elchi-backend / elchi-collector flow:
+#   bump VERSION → run this workflow → it builds the AMD64 binary, attaches it to
+#   a vX.Y.Z GitHub Release, then dispatches docker-build.yml which reuses that
+#   exact binary (no recompile).
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to create release from'
+        required: true
+        default: 'main'
+        type: string
+
+env:
+  GH_TOKEN: ${{ secrets.GH_PAT }}
+
+jobs:
+  create-release:
+    name: Build, tag and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git remote set-url origin https://${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
+
+      - name: Get version
+        id: get_version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version found: ${VERSION}"
+
+      - name: Check if release exists
+        id: check_release
+        run: |
+          RELEASE_EXISTS=$(gh release view "v${{ steps.get_version.outputs.version }}" 2>/dev/null || echo "false")
+          if [ "$RELEASE_EXISTS" != "false" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release v${{ steps.get_version.outputs.version }} already exists — nothing to do"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Release v${{ steps.get_version.outputs.version }} does not exist — will create"
+          fi
+
+      - name: Set up Go
+        if: steps.check_release.outputs.exists == 'false'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true # latest 1.26.x patch (fixes the stdlib CVEs)
+          cache: false
+
+      - name: Build linux binaries (amd64 + arm64)
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          mkdir -p binaries
+          for ARCH in amd64 arm64; do
+            BIN_NAME="elchi-shield-v${VERSION}-linux-${ARCH}"
+            CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=v${VERSION} -X main.commit=${{ github.sha }}" \
+              -o "binaries/${BIN_NAME}" ./cmd/elchi-shield
+            (cd binaries && sha256sum "${BIN_NAME}" > "${BIN_NAME}.sha256")
+          done
+          ls -la binaries/
+
+      - name: Create tag and GitHub Release
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+          # Changelog from commits since the previous tag.
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || echo "")
+          if [ -n "$PREVIOUS_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"* %s" "${PREVIOUS_TAG}..HEAD")
+          else
+            CHANGELOG=$(git log --pretty=format:"* %s")
+          fi
+
+          # Source archive alongside the compiled binary + checksum.
+          ARCHIVE_NAME="elchi-shield-v${VERSION}"
+          git archive --format=tar.gz --prefix="${ARCHIVE_NAME}/" -o "${ARCHIVE_NAME}.tar.gz" HEAD
+
+          gh release create "v${VERSION}" \
+            --title "elchi-shield v${VERSION}" \
+            --notes "${CHANGELOG}" \
+            "${ARCHIVE_NAME}.tar.gz" \
+            binaries/*
+
+      - name: Trigger docker build
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          echo "Dispatching 'Build and Push Image' for v${{ steps.get_version.outputs.version }}"
+          gh workflow run docker-build.yml --ref main \
+            -f version="${{ steps.get_version.outputs.version }}"
+
+      - name: Release status
+        run: |
+          if [ "${{ steps.check_release.outputs.exists }}" = "true" ]; then
+            echo "Release v${{ steps.get_version.outputs.version }} already exists — docker build NOT dispatched."
+          else
+            echo "Release v${{ steps.get_version.outputs.version }} created with the AMD64 binary; docker build dispatched."
+          fi

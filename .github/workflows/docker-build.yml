@@ -1,0 +1,119 @@
+name: Build and Push Image
+
+# Packages the prebuilt AMD64+ARM64 binaries that create-release.yml attached to
+# the GitHub Release into a multi-arch distroless image, pushes it to Docker Hub,
+# generates an SBOM, keyless-signs the image (cosign/sigstore), and Trivy-scans.
+# No Go compile here — the release binaries are reused verbatim (same
+# elchi-backend / elchi-collector pattern). Normally dispatched automatically by
+# create-release.yml; can also be run manually for an existing release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to package (no "v" prefix, e.g. 0.1.0). The vX.Y.Z GitHub Release must already exist.'
+        required: true
+        type: string
+
+permissions:
+  contents: write # upload the SBOM to the release
+  id-token: write # cosign keyless (OIDC) signing
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  DOCKER_IMAGE: elchi-shield
+  GH_TOKEN: ${{ secrets.GH_PAT }}
+
+jobs:
+  build:
+    name: Package, push, sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ github.event.inputs.version }}
+          token: ${{ secrets.GH_PAT }}
+
+      # The version is the explicit release being packaged — never re-read from
+      # VERSION on main, which can have moved on to the next release.
+      - name: Set project version
+        run: echo "PROJECT_VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
+
+      - name: Download release binaries (amd64 + arm64)
+        run: |
+          for ARCH in amd64 arm64; do
+            BIN_NAME="elchi-shield-v${PROJECT_VERSION}-linux-${ARCH}"
+            echo "Downloading ${BIN_NAME}"
+            gh release download "v${PROJECT_VERSION}" \
+              --repo "${{ github.repository }}" \
+              --pattern "${BIN_NAME}" \
+              --dir artifacts --clobber
+            # Dockerfile-release-binary picks elchi-shield-linux-<TARGETARCH>.
+            cp "artifacts/${BIN_NAME}" "elchi-shield-linux-${ARCH}"
+          done
+          ls -la elchi-shield-linux-*
+
+      - name: Build and push multi-arch image
+        env:
+          DOCKER_BUILDKIT: 1
+        run: |
+          IMAGE_NAME="${DOCKER_USERNAME}/${DOCKER_IMAGE}"
+          VERSION_TAG="${IMAGE_NAME}:v${PROJECT_VERSION}"
+          LATEST_TAG="${IMAGE_NAME}:latest"
+
+          # COPY-only Dockerfile → no QEMU needed for multi-arch.
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "APP_VERSION=v${PROJECT_VERSION}" \
+            -f deploy/Dockerfile-release-binary \
+            -t "${VERSION_TAG}" \
+            -t "${LATEST_TAG}" \
+            --metadata-file build-metadata.json \
+            --push \
+            .
+
+          DIGEST=$(jq -r '."containerimage.digest"' build-metadata.json)
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_ENV
+          echo "IMAGE_DIGEST=${DIGEST}" >> $GITHUB_ENV
+          echo "Pushed ${VERSION_TAG} and ${LATEST_TAG} (${DIGEST})"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless / OIDC)
+        run: |
+          cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"
+          echo "Signed ${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Generate SBOM (SPDX) and attach to the release
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_NAME }}@${{ env.IMAGE_DIGEST }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM to the GitHub Release
+        run: gh release upload "v${PROJECT_VERSION}" sbom.spdx.json --clobber
+
+      - name: Scan image for HIGH/CRITICAL vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:v${{ github.event.inputs.version }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          # Fail the workflow if HIGH/CRITICAL CVEs are present so a Go upgrade or
+          # dep bump is forced before operators pull the image.

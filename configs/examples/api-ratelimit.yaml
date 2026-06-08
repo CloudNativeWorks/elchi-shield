@@ -1,0 +1,65 @@
+# Example policies using the built-in rate-limit engine (per-key token bucket).
+# The client IP is derived once from X-Forwarded-For / X-Real-IP (tx.SourceIP);
+# engines never re-parse it. A rate-limited request gets a 429 with Retry-After.
+#
+# Engines run in config order and aggregate "most severe wins", so a policy can
+# combine rate limiting with auth (JWT) or the WAF (Coraza) — the rate-limit
+# engine runs at the header phase (it never buffers the body).
+#
+# State-sharing ("sharing follows inheritance"): a rate_limit defined at the
+# DOMAIN level and inherited by N routes is ONE combined limiter across those
+# routes (shared buckets); a rate_limit defined on a ROUTE is independent. Define
+# the limit at the scope it should apply.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-ratelimit
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open
+
+  domains:
+    - host: "gateway.example.com"
+      listener_id: "lst-public-443"
+      routes:
+        # Per-IP limit: 100 req/s sustained, bursts up to 200.
+        - match:
+            path_prefix: "/v1/"
+          policy:
+            mode: block
+            engines:
+              rate_limit:
+                requests_per_second: 100
+                burst: 200
+                key: ip            # ip | host | header
+
+        # Per-API-key limit (key by a header value) + JWT auth on the same route.
+        # Both engines run at the header phase.
+        - match:
+            path_prefix: "/partner/"
+          policy:
+            mode: block
+            engines:
+              rate_limit:
+                requests_per_second: 10
+                burst: 20
+                key: header
+                header: "X-Api-Key"
+              jwt:
+                issuer: "https://auth.example.com/"
+                audience: "partner-api"
+                algorithms: ["RS256"]
+                public_key_file: "/etc/elchi-shield/keys/jwt-pub.pem"
+                leeway: 30s         # clock-skew tolerance
+
+        # Detect-mode (monitor) rate limit: records would-be-429s but allows the
+        # request, so you can size limits before enforcing.
+        - match:
+            path_prefix: "/beta/"
+          policy:
+            mode: detect
+            engines:
+              rate_limit:
+                requests_per_second: 5
+                key: ip

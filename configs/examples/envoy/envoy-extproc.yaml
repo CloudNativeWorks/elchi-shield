@@ -1,0 +1,68 @@
+# Example Envoy snippet wiring the ext_proc HTTP filter to elchi-shield.
+# elchi-shield runs locally beside Envoy and is reached over a Unix domain
+# socket (preferred) or loopback TCP. Only headers are sent by default; the
+# service dynamically requests buffered bodies (via mode_override) for the
+# routes whose policy enables body inspection.
+#
+# This is illustrative — adapt names/ports to your deployment.
+
+static_resources:
+  clusters:
+    - name: elchi_shield
+      type: STATIC
+      connect_timeout: 0.25s
+      # gRPC requires HTTP/2 to the ext_proc service.
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: elchi_shield
+        endpoints:
+          - lb_endpoints:
+              # Unix domain socket (preferred): matches
+              #   --extproc-network unix --extproc-addr /run/elchi-shield/extproc.sock
+              - endpoint:
+                  address:
+                    pipe:
+                      path: /run/elchi-shield/extproc.sock
+              # Or loopback TCP (matches --extproc-network tcp --extproc-addr 127.0.0.1:9000):
+              # - endpoint:
+              #     address:
+              #       socket_address: { address: 127.0.0.1, port_value: 9000 }
+
+  listeners:
+    - name: lst-public-443           # use this as listener_id in your policy
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8443 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: api
+                      domains: ["api.example.com"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: backend }
+                http_filters:
+                  - name: envoy.filters.http.ext_proc
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                      failure_mode_allow: true        # if elchi-shield is unreachable, fail open
+                      grpc_service:
+                        envoy_grpc: { cluster_name: elchi_shield }
+                        timeout: 0.2s
+                      processing_mode:
+                        request_header_mode: SEND
+                        response_header_mode: SKIP    # enable if inspecting responses
+                        request_body_mode: NONE       # service upgrades to BUFFERED per policy
+                        response_body_mode: NONE
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

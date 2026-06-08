@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+#
+# Slim release image. The AMD64 binary is built on the GitHub runner by
+# create-release.yml and attached to the GitHub Release; this Dockerfile only
+# bundles that pre-built binary — no Go toolchain, no compile. It is what
+# docker-build.yml uses (it downloads the release asset, then builds with this
+# file).
+#
+# The from-source multi-stage build lives in deploy/Dockerfile and is used for
+# local `make docker` and as the reproducible reference build.
+#
+# distroless/static:nonroot is kept (not an alpine base): no shell, no package
+# manager, minimal CVE surface. COPY --chmod sets the executable bit without a
+# RUN shell.
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG APP_VERSION=dev
+# TARGETARCH is set automatically by buildx per platform (amd64, arm64), so a
+# multi-arch build picks the matching prebuilt binary. Defaults to amd64 for a
+# plain single-arch build. The build context must contain elchi-shield-linux-<arch>.
+ARG TARGETARCH=amd64
+
+LABEL org.opencontainers.image.title="elchi-shield" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.source="https://github.com/cloudnativeworks/elchi-shield"
+
+COPY --chmod=0755 elchi-shield-linux-${TARGETARCH} /elchi-shield
+# 9001 is the loopback health/metrics port (exposed only with --allow-non-loopback).
+EXPOSE 9001
+USER nonroot:nonroot
+ENTRYPOINT ["/elchi-shield"]

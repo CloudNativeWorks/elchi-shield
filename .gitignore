@@ -1,0 +1,32 @@
+# Binaries
+/bin/
+/dist/
+# Root-level built binary only — anchored so it does NOT match the
+# cmd/elchi-shield/ source package (a bare `elchi-shield` would ignore it).
+/elchi-shield
+
+# Test & coverage
+*.out
+*.test
+*.prof
+coverage.*
+
+# Go workspace
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local runtime data
+/tmp/
+*.local.yaml
+*.local.json
+CLAUDE.md
+PLAN.md
+
+# e2e harness build artifacts (run.sh builds these per run, then cleans them up)
+test/e2e/*.bin

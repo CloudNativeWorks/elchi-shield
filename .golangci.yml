@@ -1,0 +1,43 @@
+# golangci-lint v2 configuration for elchi-shield.
+# Conservative, signal-over-noise linter set for a performance- and
+# security-sensitive service.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - bodyclose
+    - errname
+    - errorlint
+    - gocritic
+    - intrange      # prefer `for range N` (Go 1.22+)
+    - misspell
+    - perfsprint    # prefer strconv/concatenation over fmt.Sprintf
+    - prealloc
+    - revive
+    - unconvert
+    - usestdlibvars # use net/http etc. constants
+    - wastedassign
+    - whitespace
+  settings:
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+        - name: redefines-builtin-id
+          disabled: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - prealloc
+          - revive
+          - intrange      # canonical benchmark loops (for i := 0; i < b.N)
+          - usestdlibvars # string literals in test fixtures are fine
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

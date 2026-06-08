@@ -1,0 +1,63 @@
+# Example Elchi Sentinel policy document.
+# Written by the Elchi Client Agent into the watched config directory.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-public
+  labels:
+    team: platform
+    env: prod
+
+spec:
+  # File-level defaults inherited by every domain/route below unless overridden.
+  defaults:
+    mode: block            # block | detect | shadow | off
+    fail_mode: fail_open   # fail_open | fail_close
+    max_request_body_bytes: 1048576   # 1 MiB
+    max_response_body_bytes: 0        # 0 = do not inspect responses
+    max_header_bytes: 8192
+    timeout: 50ms
+    log_level: info
+    sampling_rate: 1.0
+
+  domains:
+    - host: "api.example.com"
+      listener_id: "lst-public-443"
+      routes:
+        # Inspect JSON request bodies on the v1 API surface.
+        - match:
+            path_prefix: "/v1/"
+            methods: [GET, POST, PUT, PATCH, DELETE]
+          policy:
+            mode: block
+            inspect_request_body: true
+            max_request_body_bytes: 524288   # 256 KiB
+            checks:
+              headers:
+                required: ["X-Request-Id"]
+                forbidden: ["X-Debug"]
+                enforce_valid_host: true
+                max_header_value_bytes: 4096
+              body:
+                require_json: true
+                detect_sensitive_data: true
+
+        # Admin surface: monitor only (detect), fail closed.
+        - match:
+            path_regex: "^/admin/.*$"
+          policy:
+            mode: detect
+            fail_mode: fail_close
+
+        # Health probes: skip inspection entirely.
+        - match:
+            path_exact: "/healthz"
+            methods: [GET]
+          policy:
+            mode: off
+
+    # A second domain in the same file, different posture (shadow detection).
+    - host: "*.internal.example.com"
+      policy:
+        mode: shadow
+        sampling_rate: 0.25
