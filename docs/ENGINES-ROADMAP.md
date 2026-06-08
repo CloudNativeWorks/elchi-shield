@@ -1,5 +1,23 @@
 # elchi-shield — Phased Engine Roadmap (8 new security engines)
 
+## Implementation status (2026-06-08)
+
+**Delivered (Phases 1–6 + 7a):** IP reputation (CIDR/feeds/GeoIP) · bot detection
+(UA/verified-bot/JA4/heuristics) · API-key auth · native HMAC signing · RFC 9421
+(`-tags httpsig`) · OAuth2/OIDC JWKS · mTLS XFCC · OpenAPI positive validation
+(`-tags openapi`) · GraphQL guard · DLP response redaction (new body-mutation
+channel) · collaborative anomaly scoring. Shared infra `internal/{netmatch,feed,
+geoip}` + `internal/engine/auth` built first. Every phase landed with unit tests,
+a real-Envoy e2e phase (now 146 assertions), and `-race`/lint/0-alloc green.
+
+**Deferred — Phase 7b adaptive concurrency limiting:** not built. It needs the
+single most invasive change in the roadmap — an ext_proc per-stream
+reservation-token (reserve on the request, release on the matching response AND on
+stream teardown, or a leaked slot becomes a permanent shed → self-DoS), which sits
+at the server level rather than the clean engine abstraction. The existing sharded
+rate-limit engine already covers per-key abuse, so this is a nice-to-have parked
+for a future, dedicated change with its own stress/leak proof.
+
 ## Executive summary
 
 This plan adds eight engines to elchi-shield, sequenced so that **shared infrastructure lands first** and each engine reuses it rather than re-inventing it. The dominant theme: most of these engines are cheap, header-phase, lock-free lookups (IP/CIDR/Geo, bot, JWKS, XFCC, API-key); a smaller set are body-phase (OpenAPI body validation, GraphQL, DLP, HMAC-with-digest); and two are cross-cutting control mechanisms (anomaly scoring, adaptive concurrency).
