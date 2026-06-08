@@ -44,8 +44,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
+          # golangci-lint v2 (the .golangci.yml uses `version: "2"` and the repo
+          # is on go 1.26 — v1 binaries can't load either). Pin to match local.
+          version: v2.12.2
           args: --build-tags "coraza clickhouse otel"
 
   vuln:
