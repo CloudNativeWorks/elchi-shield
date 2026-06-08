@@ -81,6 +81,11 @@ type Config struct {
 	VerifiedBots   []VerifiedBotConfig
 	TLS            TLSConfig
 	Heuristics     HeuristicsConfig
+	// EmitScore, when true, makes the engine contribute its computed score to the
+	// policy's collaborative anomaly score (returning a non-blocking verdict)
+	// instead of blocking at its own ScoreThreshold. Hard-block layers (UA deny,
+	// impersonation, JA4 deny / consistency) still block.
+	EmitScore bool
 }
 
 type verifiedBot struct {
@@ -108,6 +113,8 @@ type Engine struct {
 	hRequireAL     bool
 	hRequireAE     bool
 	hScore         int
+
+	emitScore bool
 }
 
 // New compiles the configuration into an Engine. Parse/load errors are returned
@@ -128,6 +135,7 @@ func New(cfg Config) (*Engine, error) {
 		hRequireAL:     cfg.Heuristics.RequireAcceptLanguage,
 		hRequireAE:     cfg.Heuristics.RequireAcceptEncoding,
 		hScore:         cfg.Heuristics.ScorePerAnomaly,
+		emitScore:      cfg.EmitScore,
 	}
 
 	if len(cfg.UA.DenySubstrings) > 0 {
@@ -234,6 +242,11 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 		if e.hRequireAE && !hasHeader(req, "accept-encoding") {
 			score += e.hScore
 		}
+	}
+	// In emit-score mode, contribute the score to the policy's anomaly aggregator
+	// (non-blocking) rather than blocking at the engine's own threshold.
+	if e.emitScore {
+		return decision.Verdict{Score: score}, nil
 	}
 	if e.threshold > 0 && score >= e.threshold {
 		return block("bot.score", fmt.Sprintf("bot score %d >= threshold %d", score, e.threshold), decision.SeverityMedium), nil

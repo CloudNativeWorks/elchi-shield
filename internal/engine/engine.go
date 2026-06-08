@@ -162,6 +162,7 @@ func (s *Set) inspect(ctx context.Context, req *Request, want func(SecurityEngin
 		return decision.Verdict{}, nil
 	}
 	var worst decision.Verdict
+	var totalScore int
 	var errs []error
 	for _, e := range s.engines {
 		if want != nil && !want(e) {
@@ -176,12 +177,14 @@ func (s *Set) inspect(ctx context.Context, req *Request, want func(SecurityEngin
 			errs = append(errs, err)
 			continue
 		}
+		totalScore += v.Score // collaborative anomaly score, summed across engines
 		if v.Action == decision.Block && v.Severity >= worst.Severity {
 			worst = v
 		} else if worst.Action != decision.Block && v.Severity > worst.Severity {
 			worst = v
 		}
 	}
+	worst.Score = totalScore
 	return worst, errors.Join(errs...)
 }
 

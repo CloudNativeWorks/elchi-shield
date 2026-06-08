@@ -259,7 +259,7 @@ func buildIPReputation(ir *config.IPReputationSpec) (engine.SecurityEngine, erro
 // buildBot constructs the bot-detection engine, loading any verified-bot IP
 // feeds from disk (cold path).
 func buildBot(b *config.BotSpec) (engine.SecurityEngine, error) {
-	cfg := bot.Config{ScoreThreshold: b.ScoreThreshold}
+	cfg := bot.Config{ScoreThreshold: b.ScoreThreshold, EmitScore: b.EmitScore}
 	if ua := b.UserAgent; ua != nil {
 		cfg.UA = bot.UAConfig{
 			DenySubstrings: ua.DenySubstrings,

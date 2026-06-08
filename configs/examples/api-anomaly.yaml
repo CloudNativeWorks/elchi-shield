@@ -1,0 +1,37 @@
+# Example policy using collaborative anomaly scoring. Instead of any single weak
+# signal blocking, scoring engines CONTRIBUTE points; the policy blocks only when
+# the per-request total crosses anomaly_threshold. This catches "low-and-slow"
+# clients that no individual check would stop, while avoiding false positives
+# from one borderline signal. (Hard-block layers — UA deny, bot impersonation,
+# JA4 deny — still block immediately, independent of the score.)
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-anomaly
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open
+
+  domains:
+    - host: "scored.example.com"
+      listener_id: "lst-scored-443"
+      routes:
+        - match:
+            path_prefix: "/"
+          policy:
+            mode: block
+            # Block when the accumulated score reaches 70. Start in detect mode to
+            # tune the threshold against real traffic before enforcing.
+            anomaly_threshold: 70
+            engines:
+              bot:
+                emit_score: true          # contribute to the score instead of self-blocking
+                user_agent:
+                  score_known_bot: 30
+                  deny_substrings: ["sqlmap", "nikto"]   # still a hard block
+                heuristics:
+                  require_accept: true
+                  require_accept_language: true
+                  require_accept_encoding: true
+                  score_per_anomaly: 25

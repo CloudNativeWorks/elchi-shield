@@ -173,6 +173,7 @@ type PolicySpec struct {
 	Timeout              *Duration     `yaml:"timeout" json:"timeout"`
 	LogLevel             *string       `yaml:"log_level" json:"log_level"`
 	SamplingRate         *float64      `yaml:"sampling_rate" json:"sampling_rate"`
+	AnomalyThreshold     *int          `yaml:"anomaly_threshold" json:"anomaly_threshold"`
 	SkipChecks           []string      `yaml:"skip_checks" json:"skip_checks"`
 	Pipeline             *PipelineSpec `yaml:"pipeline" json:"pipeline"`
 	Checks               Checks        `yaml:"checks" json:"checks"`
@@ -342,7 +343,10 @@ type HMACSignSpec struct {
 type BotSpec struct {
 	// ScoreThreshold blocks when the accumulated score reaches it (0 disables
 	// score-based blocking; hard-block layers still apply).
-	ScoreThreshold int                `yaml:"score_threshold" json:"score_threshold"`
+	ScoreThreshold int `yaml:"score_threshold" json:"score_threshold"`
+	// EmitScore contributes the bot score to the policy anomaly aggregator instead
+	// of blocking at score_threshold (hard-block layers still block).
+	EmitScore      bool               `yaml:"emit_score" json:"emit_score"`
 	UserAgent      *BotUASpec         `yaml:"user_agent" json:"user_agent"`
 	VerifiedBots   []BotVerifiedSpec  `yaml:"verified_bots" json:"verified_bots"`
 	TLSFingerprint *BotTLSSpec        `yaml:"tls_fingerprint" json:"tls_fingerprint"`

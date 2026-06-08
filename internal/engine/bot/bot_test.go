@@ -197,3 +197,30 @@ func TestMetadata(t *testing.T) {
 		t.Errorf("close: %v", err)
 	}
 }
+
+func TestEmitScoreMode(t *testing.T) {
+	// In emit-score mode the bot contributes its score (Continue) instead of
+	// blocking at its own threshold, but hard layers still block.
+	e, err := New(Config{
+		ScoreThreshold: 50,
+		EmitScore:      true,
+		UA:             UAConfig{ScoreKnownBot: 40, DenySubstrings: []string{"sqlmap"}},
+		Heuristics:     HeuristicsConfig{RequireAcceptLanguage: true, ScorePerAnomaly: 40},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A bot UA missing Accept-Language → 40 (bot) + 40 (heuristic) = 80, but NOT
+	// a block — the score is emitted for the anomaly aggregator.
+	v := inspect(t, e, "1.2.3.4", hdrs{"User-Agent": "SomeCrawler/1.0 (+http://x/bot)"})
+	if v.Action == decision.Block {
+		t.Fatalf("emit-score mode must not block on score, got %+v", v)
+	}
+	if v.Score != 80 {
+		t.Fatalf("expected score 80, got %d", v.Score)
+	}
+	// Hard layer (UA deny) still blocks even in emit-score mode.
+	if v := inspect(t, e, "1.2.3.4", hdrs{"User-Agent": "sqlmap/1.0"}); v.Action != decision.Block {
+		t.Fatal("hard UA-deny must still block in emit-score mode")
+	}
+}

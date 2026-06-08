@@ -90,6 +90,11 @@ type Transaction struct {
 	// ext_proc BodyMutation. Distinct from ReplaceBody's inspection-only swap.
 	bodyMutated bool
 
+	// anomalyScore accumulates the collaborative anomaly score across scoring
+	// engines for the current phase; the WAF stage blocks when it crosses the
+	// policy's anomaly threshold. Reset per Run.
+	anomalyScore int
+
 	// bodyReserved is the cumulative bytes this stream has reserved from the
 	// shared body budget (charged as chunks are buffered, released at stream end).
 	// It is server-owned bookkeeping kept here because the Transaction is the
@@ -212,6 +217,12 @@ func (tx *Transaction) MutateBody(b []byte) {
 // BodyMutated reports whether the body was rewritten for forwarding.
 func (tx *Transaction) BodyMutated() bool { return tx.bodyMutated }
 
+// AddAnomalyScore adds n to the per-request collaborative anomaly score.
+func (tx *Transaction) AddAnomalyScore(n int) { tx.anomalyScore += n }
+
+// AnomalyScore returns the accumulated anomaly score.
+func (tx *Transaction) AnomalyScore() int { return tx.anomalyScore }
+
 // BodyInspected reports whether the body inspect pipeline already ran for the
 // current direction.
 func (tx *Transaction) BodyInspected() bool { return tx.bodyInspected }
@@ -263,6 +274,7 @@ func (tx *Transaction) BeginResponse() {
 	tx.bodyTruncated = false
 	tx.bodyInspected = false
 	tx.bodyMutated = false
+	tx.anomalyScore = 0
 	tx.bodyRequired = false
 	tx.wafEnabled = false
 	// Release the request body's budget reservation now that it is no longer
@@ -314,6 +326,7 @@ func (tx *Transaction) Reset() {
 	tx.bodyTruncated = false
 	tx.bodyInspected = false
 	tx.bodyMutated = false
+	tx.anomalyScore = 0
 	tx.bodyReserved = 0
 	if cap(tx.body) > retainedBodyCap {
 		tx.body = nil

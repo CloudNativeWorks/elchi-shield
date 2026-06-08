@@ -215,6 +215,13 @@ req GET /bot "$AH" -A "$BROWSER" -H 'x-shield-ja4: t13d-known-bad-ja4' -H "$AL";
 req GET /bot "$AH" -A "$BROWSER" -H 'x-shield-ja4: t13d-curl-tool-ja4' -H "$AL"; expect "JA4 tool vs browser-UA mismatch → 403" "$CODE" 403
 req GET /bot "$AH" -A "$BROWSER";                       expect "missing Accept-Language heuristic → 403" "$CODE" 403
 
+# ==================== PHASE 5c2: Anomaly scoring (collaborative) ====================
+phase "Anomaly scoring (collaborative)"
+BOTUA='SomeCrawler/1.0 (+http://example.com/bot)'
+req GET /anomaly "$AH" -A "$BOTUA";                          expect "bot(40)+no-AL(40)=80 ≥ 70 → 403" "$CODE" 403
+req GET /anomaly "$AH" -A "$BOTUA" -H 'Accept-Language: en'; expect "single signal (40) below threshold → 200" "$CODE" 200
+req GET /anomaly "$AH" -A "$BROWSER" -H 'Accept-Language: en'; expect "clean request (score 0) → 200" "$CODE" 200
+
 # ==================== PHASE 5d: Engines — API-key & HMAC signing ====================
 phase "Engine: API-key & HMAC signing"
 req GET /apikey "$AH" -H 'X-Api-Key: e2e-api-key-1';   expect "valid API key → 200" "$CODE" 200

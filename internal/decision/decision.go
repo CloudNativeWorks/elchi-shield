@@ -113,6 +113,11 @@ type Verdict struct {
 	// StatusCode optionally overrides the HTTP status for a Block (e.g. 429 from
 	// the rate-limit engine). 0 means use DefaultBlockStatus (403).
 	StatusCode int
+	// Score is an anomaly-score contribution. A scoring engine returns a
+	// non-blocking verdict (Continue) carrying a Score; the executor sums scores
+	// across engines and blocks when the per-request total crosses the policy's
+	// anomaly threshold (collaborative scoring — no single weak signal blocks).
+	Score int
 }
 
 // IsBlock reports whether this decision enforces a block.

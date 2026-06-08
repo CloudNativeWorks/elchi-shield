@@ -27,6 +27,7 @@ type CompiledPolicy struct {
 	MaxResponseBodyBytes int64
 	Timeout              time.Duration
 	SamplingRate         float64
+	AnomalyThreshold     int
 	Checks               CompiledChecks
 	Engines              *engine.Set
 	// RequestOrder/ResponseOrder are the per-policy inspector stage orders (nil
@@ -136,6 +137,7 @@ func FromResolved(id string, r config.ResolvedPolicy) *CompiledPolicy {
 		MaxResponseBodyBytes: r.MaxResponseBodyBytes,
 		Timeout:              r.Timeout,
 		SamplingRate:         r.SamplingRate,
+		AnomalyThreshold:     r.AnomalyThreshold,
 		Checks:               checks,
 		RequestOrder:         slices.Clone(r.RequestOrder),
 		ResponseOrder:        slices.Clone(r.ResponseOrder),

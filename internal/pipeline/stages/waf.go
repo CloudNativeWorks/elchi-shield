@@ -79,6 +79,24 @@ func runEngines(ctx context.Context, tx *pipeline.Transaction, inspect engineIns
 	if err != nil {
 		return pipeline.Fail(err)
 	}
+	// Collaborative anomaly scoring: accumulate this phase's engine score and
+	// block once the per-request total crosses the policy threshold (so no single
+	// weak signal blocks alone, but several together do).
+	if v.Score > 0 {
+		tx.AddAnomalyScore(v.Score)
+	}
+	if t := p.AnomalyThreshold; t > 0 && tx.AnomalyScore() >= t {
+		d := decision.Decision{
+			Action:     decision.Block,
+			Reason:     "anomaly score crossed threshold",
+			RuleID:     "anomaly.threshold",
+			PolicyID:   tx.PolicyID(),
+			Engine:     "anomaly",
+			Severity:   decision.SeverityMedium,
+			StatusCode: decision.DefaultBlockStatus,
+		}
+		return pipeline.Deny(&d)
+	}
 	return pipeline.Continue()
 }
 

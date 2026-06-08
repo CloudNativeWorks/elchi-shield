@@ -82,3 +82,21 @@ func TestCorazaNotBuilt(t *testing.T) {
 		t.Error("Coraza should be ErrNotImplemented without the build tag")
 	}
 }
+
+func TestInspectSumsScores(t *testing.T) {
+	set := NewSet(
+		&fakeEngine{name: "a", verdict: decision.Verdict{Action: decision.Continue, Score: 30}},
+		&fakeEngine{name: "b", verdict: decision.Verdict{Action: decision.Continue, Score: 50}},
+		&fakeEngine{name: "c", verdict: decision.Verdict{Action: decision.Continue}},
+	)
+	v, err := set.InspectHeaderPhase(context.Background(), &Request{Direction: DirectionRequest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Score != 80 {
+		t.Fatalf("scores should sum to 80, got %d", v.Score)
+	}
+	if v.Action == decision.Block {
+		t.Fatal("non-blocking scoring engines should not produce a block verdict")
+	}
+}

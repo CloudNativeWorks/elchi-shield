@@ -20,6 +20,7 @@ type ResolvedPolicy struct {
 	Timeout              time.Duration
 	LogLevel             string
 	SamplingRate         float64
+	AnomalyThreshold     int
 	SkipChecks           []string
 	RequestOrder         []string // inspector order for requests (nil = default)
 	ResponseOrder        []string // inspector order for responses (nil = default)
@@ -89,6 +90,9 @@ func Resolve(base ResolvedPolicy, specs ...PolicySpec) ResolvedPolicy {
 		}
 		if s.SamplingRate != nil {
 			out.SamplingRate = *s.SamplingRate
+		}
+		if s.AnomalyThreshold != nil {
+			out.AnomalyThreshold = *s.AnomalyThreshold
 		}
 		for _, c := range s.SkipChecks {
 			skip[c] = struct{}{}

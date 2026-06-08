@@ -126,6 +126,18 @@ spec:
                   require_accept_language: true
                   score_per_anomaly: 100
 
+        # Collaborative anomaly scoring: the bot engine emits its score instead of
+        # blocking; the policy blocks only when the per-request total ≥ threshold.
+        - match: { path_prefix: "/anomaly" }
+          policy:
+            mode: block
+            anomaly_threshold: 70
+            engines:
+              bot:
+                emit_score: true
+                user_agent: { score_known_bot: 40 }
+                heuristics: { require_accept_language: true, score_per_anomaly: 40 }
+
         # API-key authentication (header-phase).
         - match: { path_prefix: "/apikey" }
           policy:
