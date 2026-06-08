@@ -33,7 +33,7 @@ msum(){ curl -s "http://${HTTP}/metrics" | awk -v re="$1" '$0 ~ re {s+=$2} END{p
 H(){ printf -- '-HHost:%s' "$1"; }   # host header arg
 
 # ---------------- bring up the stack ----------------
-( cd "$ROOT" && go build -tags "coraza httpsig" -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
+( cd "$ROOT" && go build -tags "coraza httpsig openapi" -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
 go build -o "$DIR/gentoken.bin" "$DIR/gentoken" || { echo "gentoken build failed"; exit 1; }
 go build -o "$DIR/gensig.bin" "$DIR/gensig" || { echo "gensig build failed"; exit 1; }
 go build -o "$DIR/genjwks.bin" "$DIR/genjwks" || { echo "genjwks build failed"; exit 1; }
@@ -50,6 +50,27 @@ printf '# e2e threat feed\n198.51.100.0/24\n2001:db8:bad::/48\n' > "$CFG/threat-
 cp "$ROOT/internal/geoip/testdata/GeoLite2-Country-Test.mmdb" "$CFG/geo-country.mmdb"
 # Verified-bot IP feed for the bot engine (a Googlebot range).
 printf '# googlebot ranges\n66.249.64.0/19\n' > "$CFG/googlebot.txt"
+# OpenAPI spec for the openapi engine (.oas extension so the config watcher
+# doesn't try to parse it as a SecurityPolicy).
+cat > "$CFG/api-spec.oas" <<'OAS'
+openapi: 3.0.0
+info: {title: e2e, version: 1.0.0}
+paths:
+  /oas/users/{id}:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+        - {name: q, in: query, required: true, schema: {type: string}}
+      responses: {'200': {description: ok}}
+  /oas/create:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [name], properties: {name: {type: string}}}
+      responses: {'200': {description: ok}}
+OAS
 # JWKS file + RS256 tokens for the jwks engine (valid token line 1, invalid line 2).
 JWT_OUT=$("$DIR/genjwks.bin" -out "$CFG/jwks.keyset" -kid k1 -aud api)
 JWKS_VALID=$(printf '%s\n' "$JWT_OUT" | sed -n 1p)
@@ -243,6 +264,15 @@ req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a: f b: f c: f d: f }"}';  
 req POST /graphql "$AH" -H "$GQ" --data '[{"query":"{a}"},{"query":"{b}"},{"query":"{c}"}]'; expect "batch > 2 → 403" "$CODE" 403
 req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a {"}';                           expect "malformed query → 403" "$CODE" 403
 req POST /graphql "$AH" -H 'Content-Type: text/plain' --data 'not graphql';           expect "non-GraphQL content-type → passthrough (200)" "$CODE" 200
+
+# ==================== PHASE 5g: Engine — OpenAPI positive validation ====================
+phase "Engine: OpenAPI validation (-tags openapi)"
+req GET '/oas/users/5?q=hi' "$AH";                     expect "conforming request → 200" "$CODE" 200
+req GET '/oas/users/abc?q=hi' "$AH";                   expect "path param wrong type → 403" "$CODE" 403
+req GET '/oas/users/5' "$AH";                          expect "missing required query param → 403" "$CODE" 403
+req GET '/oas/unknown' "$AH";                          expect "undeclared path → 403" "$CODE" 403
+req POST /oas/create "$AH" -H 'Content-Type: application/json' --data '{"name":"alice"}'; expect "valid request body → 200" "$CODE" 200
+req POST /oas/create "$AH" -H 'Content-Type: application/json' --data '{}';               expect "body missing required field → 403" "$CODE" 403
 
 # ==================== PHASE 6: Engines — Coraza WAF ====================
 phase "Engine: Coraza WAF (-tags coraza)"

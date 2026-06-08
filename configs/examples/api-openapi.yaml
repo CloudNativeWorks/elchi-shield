@@ -1,0 +1,27 @@
+# Example policy using the OpenAPI positive-validation engine (requires a binary
+# built with the `openapi` build tag). It validates each request against an
+# OpenAPI 3.x contract — path/query/header parameters and, optionally, the
+# request body — so only conforming requests pass (positive security: the
+# inverse of a WAF's deny-list). reject_undeclared_path blocks shadow endpoints.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-openapi
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_close   # malformed/non-conforming requests fail closed
+
+  domains:
+    - host: "contract.example.com"
+      listener_id: "lst-contract-443"
+      routes:
+        - match:
+            path_prefix: "/v1/"
+          policy:
+            mode: block
+            engines:
+              openapi:
+                spec_file: "/etc/elchi/elchi-shield/openapi/api.yaml"
+                validate_request_body: true     # forces body buffering
+                reject_undeclared_path: true    # block paths not in the spec

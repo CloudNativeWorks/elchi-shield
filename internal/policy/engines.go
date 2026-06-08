@@ -15,6 +15,7 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ipreputation"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwks"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwt"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/openapi"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ratelimit"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/xfcc"
 )
@@ -202,6 +203,18 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 		})
 		if err != nil {
 			return nil, fmt.Errorf("graphql engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
+	if o := spec.OpenAPI; o != nil {
+		e, err := openapi.New(openapi.Config{
+			SpecFile:             o.SpecFile,
+			ValidateRequestBody:  o.ValidateRequestBody,
+			RejectUndeclaredPath: o.RejectUndeclaredPath,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("openapi engine: %w", err)
 		}
 		engines = append(engines, e)
 	}

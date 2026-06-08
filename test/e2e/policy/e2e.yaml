@@ -176,6 +176,15 @@ spec:
                 require_present: true
                 uris: ["spiffe://cluster/ns/team/sa/web"]
                 dns_names: ["client.example.com"]
+        # OpenAPI positive validation (requires the `openapi` build tag).
+        - match: { path_prefix: "/oas" }
+          policy:
+            mode: block
+            engines:
+              openapi:
+                spec_file: "__CFG__/api-spec.oas"
+                validate_request_body: true
+                reject_undeclared_path: true
         # GraphQL guard (body-phase): depth/alias/root-field/batch/introspection.
         - match: { path_prefix: "/graphql" }
           policy:

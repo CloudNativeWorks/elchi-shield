@@ -274,6 +274,11 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 				add("engines.graphql", errors.New("at least one limit (max_depth/max_aliases/max_root_fields/max_total_fields/max_operations) or block_introspection is required"))
 			}
 		}
+		if o := s.Engines.OpenAPI; o != nil {
+			if o.SpecFile == "" {
+				add("engines.openapi.spec_file", errors.New("required"))
+			}
+		}
 	}
 	return errs
 }

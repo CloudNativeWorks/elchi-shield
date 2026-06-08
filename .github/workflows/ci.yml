@@ -20,7 +20,7 @@ jobs:
         # The default (lean) binary AND the full build-tagged binary must both
         # compile and pass — the heavy deps (Coraza/ClickHouse/OTEL) are tagged
         # out of the default binary on purpose.
-        tags: ["", "coraza clickhouse otel httpsig"]
+        tags: ["", "coraza clickhouse otel httpsig openapi"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -49,7 +49,7 @@ jobs:
           # golangci-lint v2 (the .golangci.yml uses `version: "2"` and the repo
           # is on go 1.26 — v1 binaries can't load either). Pin to match local.
           version: v2.12.2
-          args: --build-tags "coraza clickhouse otel httpsig"
+          args: --build-tags "coraza clickhouse otel httpsig openapi"
 
   vuln:
     runs-on: ubuntu-latest

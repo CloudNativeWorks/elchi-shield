@@ -224,6 +224,15 @@ type EnginesSpec struct {
 	JWKS          *JWKSSpec          `yaml:"jwks" json:"jwks"`
 	XFCC          *XFCCSpec          `yaml:"xfcc" json:"xfcc"`
 	GraphQL       *GraphQLSpec       `yaml:"graphql" json:"graphql"`
+	OpenAPI       *OpenAPISpec       `yaml:"openapi" json:"openapi"`
+}
+
+// OpenAPISpec configures the OpenAPI positive-validation engine (only usable in a
+// binary built with the `openapi` build tag).
+type OpenAPISpec struct {
+	SpecFile             string `yaml:"spec_file" json:"spec_file"`
+	ValidateRequestBody  bool   `yaml:"validate_request_body" json:"validate_request_body"`
+	RejectUndeclaredPath bool   `yaml:"reject_undeclared_path" json:"reject_undeclared_path"`
 }
 
 // GraphQLSpec configures the body-phase GraphQL guard. A zero limit disables that
