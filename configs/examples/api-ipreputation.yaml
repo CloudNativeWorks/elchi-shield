@@ -56,3 +56,20 @@ spec:
                 allow_cidrs:
                   - "10.0.0.0/8"
                   - "203.0.113.0/24"
+
+        # GeoIP / ASN blocking via MaxMind databases (files distributed by the
+        # management plane). Evaluated after CIDR/feed rules. block_countries and
+        # block_asns are deny lists; allow_countries (if set) makes geo
+        # default-DENY. on_missing: continue|block governs IPs absent from the DB.
+        - match:
+            path_prefix: "/checkout/"
+          policy:
+            mode: block
+            engines:
+              ip_reputation:
+                geoip:
+                  database_file: "/etc/elchi/elchi-shield/geo/GeoLite2-Country.mmdb"
+                  asn_database_file: "/etc/elchi/elchi-shield/geo/GeoLite2-ASN.mmdb"
+                  block_countries: ["KP", "RU"]
+                  block_asns: [64512]
+                  on_missing: continue

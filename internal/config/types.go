@@ -229,6 +229,26 @@ type IPReputationSpec struct {
 	DenyCIDRs []string `yaml:"deny_cidrs" json:"deny_cidrs"`
 	// Feeds are threat-intelligence feed files (treated as block lists).
 	Feeds []FeedSpec `yaml:"feeds" json:"feeds"`
+	// GeoIP enables country/ASN-based blocking via MaxMind databases.
+	GeoIP *GeoIPSpec `yaml:"geoip" json:"geoip"`
+}
+
+// GeoIPSpec configures GeoIP/ASN-based blocking for the IP-reputation engine.
+type GeoIPSpec struct {
+	// DatabaseFile is the MaxMind GeoLite2/GeoIP2 Country .mmdb path.
+	DatabaseFile string `yaml:"database_file" json:"database_file"`
+	// ASNDatabaseFile is the MaxMind GeoLite2/GeoIP2 ASN .mmdb path.
+	ASNDatabaseFile string `yaml:"asn_database_file" json:"asn_database_file"`
+	// BlockCountries are ISO 3166-1 alpha-2 codes to block (e.g. ["KP","RU"]).
+	BlockCountries []string `yaml:"block_countries" json:"block_countries"`
+	// AllowCountries, when non-empty, makes geo default-DENY: any other country
+	// is blocked.
+	AllowCountries []string `yaml:"allow_countries" json:"allow_countries"`
+	// BlockASNs are autonomous system numbers to block.
+	BlockASNs []uint `yaml:"block_asns" json:"block_asns"`
+	// OnMissing selects behavior for an IP absent from the database: "continue"
+	// (default) or "block".
+	OnMissing string `yaml:"on_missing" json:"on_missing"`
 }
 
 // FeedSpec describes one threat-intelligence feed file consumed by the

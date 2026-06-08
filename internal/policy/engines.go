@@ -128,10 +128,22 @@ func buildIPReputation(ir *config.IPReputationSpec) (engine.SecurityEngine, erro
 			Severity: parseSeverity(f.Severity),
 		})
 	}
+	var geo *ipreputation.GeoConfig
+	if g := ir.GeoIP; g != nil {
+		geo = &ipreputation.GeoConfig{
+			CountryDBFile:  g.DatabaseFile,
+			ASNDBFile:      g.ASNDatabaseFile,
+			BlockCountries: g.BlockCountries,
+			AllowCountries: g.AllowCountries,
+			BlockASNs:      g.BlockASNs,
+			BlockOnMissing: g.OnMissing == "block",
+		}
+	}
 	return ipreputation.New(ipreputation.Config{
 		AllowCIDRs: ir.AllowCIDRs,
 		DenyCIDRs:  ir.DenyCIDRs,
 		Feeds:      feeds,
+		Geo:        geo,
 	})
 }
 

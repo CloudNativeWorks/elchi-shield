@@ -254,8 +254,8 @@ func validateIPReputation(ir *IPReputationSpec, add func(field string, err error
 			add(fmt.Sprintf("engines.ip_reputation.deny_cidrs[%d]", i), fmt.Errorf("invalid CIDR %q", c))
 		}
 	}
-	if len(ir.AllowCIDRs) == 0 && len(ir.DenyCIDRs) == 0 && len(ir.Feeds) == 0 {
-		add("engines.ip_reputation", errors.New("at least one of allow_cidrs, deny_cidrs, or feeds is required"))
+	if len(ir.AllowCIDRs) == 0 && len(ir.DenyCIDRs) == 0 && len(ir.Feeds) == 0 && ir.GeoIP == nil {
+		add("engines.ip_reputation", errors.New("at least one of allow_cidrs, deny_cidrs, feeds, or geoip is required"))
 	}
 	for i, f := range ir.Feeds {
 		p := fmt.Sprintf("engines.ip_reputation.feeds[%d]", i)
@@ -274,6 +274,24 @@ func validateIPReputation(ir *IPReputationSpec, add func(field string, err error
 		case "", "low", "medium", "high", "critical":
 		default:
 			add(p+".severity", fmt.Errorf("invalid severity %q (want low|medium|high|critical)", f.Severity))
+		}
+	}
+	if g := ir.GeoIP; g != nil {
+		if g.DatabaseFile == "" && g.ASNDatabaseFile == "" {
+			add("engines.ip_reputation.geoip", errors.New("database_file or asn_database_file is required"))
+		}
+		if len(g.BlockCountries) == 0 && len(g.AllowCountries) == 0 && len(g.BlockASNs) == 0 && g.OnMissing != "block" {
+			add("engines.ip_reputation.geoip", errors.New("at least one of block_countries, allow_countries, block_asns, or on_missing=block is required"))
+		}
+		for j, cc := range append(append([]string{}, g.BlockCountries...), g.AllowCountries...) {
+			if len(cc) != 2 {
+				add(fmt.Sprintf("engines.ip_reputation.geoip.countries[%d]", j), fmt.Errorf("invalid ISO country code %q (want 2 letters)", cc))
+			}
+		}
+		switch g.OnMissing {
+		case "", "continue", "block":
+		default:
+			add("engines.ip_reputation.geoip.on_missing", fmt.Errorf("invalid on_missing %q (want continue|block)", g.OnMissing))
 		}
 	}
 }

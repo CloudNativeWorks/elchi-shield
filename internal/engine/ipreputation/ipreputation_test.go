@@ -162,6 +162,95 @@ func TestInvalidConfig(t *testing.T) {
 	}
 }
 
+const (
+	countryDB = "../../geoip/testdata/GeoLite2-Country-Test.mmdb"
+	asnDB     = "../../geoip/testdata/GeoLite2-ASN-Test.mmdb"
+)
+
+func TestGeoBlockCountry(t *testing.T) {
+	e, err := New(Config{Geo: &GeoConfig{CountryDBFile: countryDB, BlockCountries: []string{"gb"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close() //nolint:errcheck
+	if v := mustInspect(t, e, "81.2.69.142"); v.Action != decision.Block { // GB
+		t.Fatal("GB source should be blocked")
+	}
+	if v := mustInspect(t, e, "89.160.20.128"); v.Action == decision.Block { // SE
+		t.Fatal("SE source should pass")
+	}
+}
+
+func TestGeoAllowCountryDefaultDeny(t *testing.T) {
+	e, err := New(Config{Geo: &GeoConfig{CountryDBFile: countryDB, AllowCountries: []string{"SE"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close() //nolint:errcheck
+	if v := mustInspect(t, e, "89.160.20.128"); v.Action == decision.Block { // SE allowed
+		t.Fatal("SE source should pass (allowlisted)")
+	}
+	if v := mustInspect(t, e, "81.2.69.142"); v.Action != decision.Block { // GB not allowed
+		t.Fatal("GB source should be blocked (not in allow list)")
+	}
+}
+
+func TestGeoBlockASN(t *testing.T) {
+	e, err := New(Config{Geo: &GeoConfig{ASNDBFile: asnDB, BlockASNs: []uint{1221}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close() //nolint:errcheck
+	if v := mustInspect(t, e, "1.128.0.1"); v.Action != decision.Block { // AS1221
+		t.Fatal("AS1221 source should be blocked")
+	}
+	if v := mustInspect(t, e, "12.81.92.1"); v.Action == decision.Block { // AS7018
+		t.Fatal("AS7018 source should pass")
+	}
+}
+
+func TestGeoOnMissing(t *testing.T) {
+	// Default: a source absent from the DB passes.
+	e, err := New(Config{Geo: &GeoConfig{CountryDBFile: countryDB, BlockCountries: []string{"GB"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close() //nolint:errcheck
+	if v := mustInspect(t, e, "8.8.8.8"); v.Action == decision.Block {
+		t.Fatal("IP absent from DB should pass by default")
+	}
+	// on_missing=block: absent source is blocked.
+	e2, err := New(Config{Geo: &GeoConfig{CountryDBFile: countryDB, BlockOnMissing: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e2.Close() //nolint:errcheck
+	if v := mustInspect(t, e2, "8.8.8.8"); v.Action != decision.Block {
+		t.Fatal("IP absent from DB should be blocked when on_missing=block")
+	}
+}
+
+func TestGeoBadDatabase(t *testing.T) {
+	if _, err := New(Config{Geo: &GeoConfig{CountryDBFile: "/nonexistent.mmdb", BlockCountries: []string{"GB"}}}); err == nil {
+		t.Fatal("expected error for missing GeoIP database")
+	}
+}
+
+func TestDenyBeatsGeo(t *testing.T) {
+	// CIDR deny is evaluated before GeoIP.
+	e, err := New(Config{
+		DenyCIDRs: []string{"81.2.69.0/24"},
+		Geo:       &GeoConfig{CountryDBFile: countryDB, AllowCountries: []string{"GB"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close() //nolint:errcheck
+	if v := mustInspect(t, e, "81.2.69.142"); v.RuleID != "ipreputation.deny_cidr" {
+		t.Fatalf("deny CIDR should win over geo-allow, got %+v", v)
+	}
+}
+
 func TestMetadata(t *testing.T) {
 	e, _ := New(Config{DenyCIDRs: []string{"10.0.0.0/8"}})
 	if e.Name() != "ipreputation" {

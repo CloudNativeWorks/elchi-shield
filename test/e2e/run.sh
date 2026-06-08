@@ -44,6 +44,8 @@ CFG="$(mktemp -d)"
 sed "s#__CFG__#${CFG}#g" "$DIR/policy/e2e.yaml" > "$CFG/e2e.yaml"
 # Threat feed consumed by the ip_reputation engine (test IPs set via XFF below).
 printf '# e2e threat feed\n198.51.100.0/24\n2001:db8:bad::/48\n' > "$CFG/threat-feed.txt"
+# MaxMind test Country DB for the GeoIP cases (81.2.69.142→GB, 89.160.20.128→SE).
+cp "$ROOT/internal/geoip/testdata/GeoLite2-Country-Test.mmdb" "$CFG/geo-country.mmdb"
 PIDS=()
 cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/gentoken.bin" "$DIR/echo.bin" "$ROWS" /tmp/eh /tmp/eb /tmp/*.gz /tmp/good.zz; }
 trap cleanup EXIT
@@ -167,6 +169,8 @@ req GET /ip-allow "$AH" -H 'X-Forwarded-For: 10.1.2.3';      expect "allowlist h
 req GET /ip-allow "$AH" -H 'X-Forwarded-For: 8.8.8.8';       expect "allowlist default-deny miss → 403" "$CODE" 403
 req GET /ip-feed  "$AH" -H 'X-Forwarded-For: 198.51.100.7';  expect "threat-feed hit → 403" "$CODE" 403
 req GET /ip-feed  "$AH" -H 'X-Forwarded-For: 1.1.1.1';       expect "threat-feed miss → 200" "$CODE" 200
+req GET /ip-geo   "$AH" -H 'X-Forwarded-For: 81.2.69.142';   expect "GeoIP blocked country (GB) → 403" "$CODE" 403
+req GET /ip-geo   "$AH" -H 'X-Forwarded-For: 89.160.20.128'; expect "GeoIP other country (SE) → 200" "$CODE" 200
 
 # ==================== PHASE 6: Engines — Coraza WAF ====================
 phase "Engine: Coraza WAF (-tags coraza)"

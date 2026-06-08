@@ -20,10 +20,12 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
 	"github.com/cloudnativeworks/elchi-shield/internal/feed"
+	"github.com/cloudnativeworks/elchi-shield/internal/geoip"
 	"github.com/cloudnativeworks/elchi-shield/internal/netmatch"
 )
 
@@ -37,6 +39,18 @@ type FeedConfig struct {
 	Severity decision.Severity
 }
 
+// GeoConfig configures GeoIP-based blocking. CountryDBFile and/or ASNDBFile are
+// MaxMind .mmdb paths. BlockOnMissing blocks a source IP absent from the
+// database (e.g. private/unroutable ranges) when true.
+type GeoConfig struct {
+	CountryDBFile  string
+	ASNDBFile      string
+	BlockCountries []string // ISO codes to block
+	AllowCountries []string // when non-empty: any other country is blocked (default-deny)
+	BlockASNs      []uint
+	BlockOnMissing bool
+}
+
 // Config configures the IP-reputation engine. All slices are parsed once in New.
 type Config struct {
 	// AllowCIDRs, when non-empty, switches the engine to default-DENY: a source
@@ -46,6 +60,8 @@ type Config struct {
 	DenyCIDRs []string
 	// Feeds are threat-intelligence feed files (all treated as block lists).
 	Feeds []FeedConfig
+	// Geo, when set, enables GeoIP/ASN-based blocking.
+	Geo *GeoConfig
 }
 
 // feedMeta is the value stored per prefix in the feed trie.
@@ -54,11 +70,22 @@ type feedMeta struct {
 	severity decision.Severity
 }
 
+// geoMatch holds the compiled GeoIP block/allow sets.
+type geoMatch struct {
+	reader         *geoip.Reader
+	blockCountries map[string]struct{}
+	allowCountries map[string]struct{}
+	blockASNs      map[uint]struct{}
+	hasAllow       bool
+	blockOnMissing bool
+}
+
 // Engine is the compiled, immutable IP-reputation matcher.
 type Engine struct {
 	allow    *netmatch.Set[struct{}]
 	deny     *netmatch.Set[struct{}]
 	feeds    *netmatch.Set[feedMeta]
+	geo      *geoMatch
 	hasAllow bool
 	hasDeny  bool
 	hasFeeds bool
@@ -102,10 +129,44 @@ func New(cfg Config) (*Engine, error) {
 		}
 	}
 
+	if cfg.Geo != nil {
+		g, err := buildGeo(cfg.Geo)
+		if err != nil {
+			return nil, err
+		}
+		e.geo = g
+	}
+
 	e.hasAllow = e.allow.Len() > 0
 	e.hasDeny = e.deny.Len() > 0
 	e.hasFeeds = e.feeds.Len() > 0
 	return e, nil
+}
+
+// buildGeo opens the GeoIP databases and compiles the block/allow sets.
+func buildGeo(c *GeoConfig) (*geoMatch, error) {
+	reader, err := geoip.Open(c.CountryDBFile, c.ASNDBFile)
+	if err != nil {
+		return nil, fmt.Errorf("geoip: %w", err)
+	}
+	g := &geoMatch{
+		reader:         reader,
+		blockCountries: make(map[string]struct{}, len(c.BlockCountries)),
+		allowCountries: make(map[string]struct{}, len(c.AllowCountries)),
+		blockASNs:      make(map[uint]struct{}, len(c.BlockASNs)),
+		hasAllow:       len(c.AllowCountries) > 0,
+		blockOnMissing: c.BlockOnMissing,
+	}
+	for _, cc := range c.BlockCountries {
+		g.blockCountries[strings.ToUpper(cc)] = struct{}{}
+	}
+	for _, cc := range c.AllowCountries {
+		g.allowCountries[strings.ToUpper(cc)] = struct{}{}
+	}
+	for _, n := range c.BlockASNs {
+		g.blockASNs[n] = struct{}{}
+	}
+	return g, nil
 }
 
 // Name implements engine.SecurityEngine.
@@ -115,8 +176,13 @@ func (*Engine) Name() string { return engineName }
 // source IP, so it runs at the cheap header phase and never buffers the body.
 func (*Engine) RequiresBody() bool { return false }
 
-// Close implements engine.SecurityEngine.
-func (*Engine) Close() error { return nil }
+// Close implements engine.SecurityEngine, releasing any GeoIP database readers.
+func (e *Engine) Close() error {
+	if e.geo != nil && e.geo.reader != nil {
+		return e.geo.reader.Close()
+	}
+	return nil
+}
 
 // Inspect evaluates the request's source IP against the deny/allow/feed sets.
 // Responses pass through (reputation is a request-side control). A request with
@@ -146,7 +212,45 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 			return block("ipreputation.feed:"+m.name, "source IP in threat feed "+m.name, m.severity), nil
 		}
 	}
+	if e.geo != nil {
+		if v, blocked := e.geo.inspect(ip); blocked {
+			return v, nil
+		}
+	}
 	return decision.Verdict{}, nil
+}
+
+// inspect evaluates the GeoIP block/allow rules for ip. A lookup error or a miss
+// is treated per blockOnMissing (default: continue).
+func (g *geoMatch) inspect(ip netip.Addr) (decision.Verdict, bool) {
+	rec, err := g.reader.Lookup(ip)
+	if err != nil {
+		// A database error is fail-open at the engine; the policy fail posture
+		// still governs the request via the executor if configured fail_close.
+		return decision.Verdict{}, false
+	}
+	if rec.Country == "" && rec.ASN == 0 {
+		if g.blockOnMissing {
+			return block("ipreputation.geo_unknown", "source IP not found in GeoIP database", decision.SeverityLow), true
+		}
+		return decision.Verdict{}, false
+	}
+	if rec.Country != "" {
+		if _, deny := g.blockCountries[rec.Country]; deny {
+			return block("ipreputation.geo_country:"+rec.Country, "source country blocked: "+rec.Country, decision.SeverityMedium), true
+		}
+		if g.hasAllow {
+			if _, ok := g.allowCountries[rec.Country]; !ok {
+				return block("ipreputation.geo_country:"+rec.Country, "source country not allowed: "+rec.Country, decision.SeverityMedium), true
+			}
+		}
+	}
+	if rec.ASN != 0 {
+		if _, deny := g.blockASNs[rec.ASN]; deny {
+			return block(fmt.Sprintf("ipreputation.geo_asn:%d", rec.ASN), fmt.Sprintf("source ASN blocked: %d", rec.ASN), decision.SeverityMedium), true
+		}
+	}
+	return decision.Verdict{}, false
 }
 
 func block(ruleID, reason string, sev decision.Severity) decision.Verdict {

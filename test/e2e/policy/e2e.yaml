@@ -96,6 +96,14 @@ spec:
               ip_reputation:
                 feeds:
                   - { name: e2e_threat, file: "__CFG__/threat-feed.txt", format: cidr_lines, severity: high }
+        - match: { path_prefix: "/ip-geo" }
+          policy:
+            mode: block
+            engines:
+              ip_reputation:
+                geoip:
+                  database_file: "__CFG__/geo-country.mmdb"
+                  block_countries: ["GB"]
         - match: { path_prefix: "/waf" }
           policy:
             mode: block

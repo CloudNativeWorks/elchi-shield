@@ -9,6 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gaissmai/bart v0.28.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/oschwald/maxminddb-golang/v2 v2.4.0
 	github.com/prometheus/client_golang v1.23.2
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.20.0
 	go.opentelemetry.io/otel/log v0.20.0
