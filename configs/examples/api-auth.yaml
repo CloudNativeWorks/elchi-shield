@@ -1,0 +1,57 @@
+# Example policies using the built-in authentication engines: API-key auth and
+# native HMAC request signing. Both run at the header phase (HMAC moves to the
+# body phase only when require_body_digest is set, so a swapped body can't bypass
+# the signature). Engines run in config order and aggregate "most severe wins".
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-auth
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_close   # auth failures should fail closed
+
+  domains:
+    - host: "auth.example.com"
+      listener_id: "lst-auth-443"
+      routes:
+        # API-key auth: keys are stored hashed (sha256) at rest. Provide either a
+        # raw `key` (hashed at load) or a precomputed `sha256`. Optional
+        # scope→path bindings restrict a key to certain prefixes.
+        - match:
+            path_prefix: "/v1/"
+          policy:
+            mode: block
+            engines:
+              api_key:
+                source: header          # header | query
+                name: "X-Api-Key"
+                keys:
+                  - sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                    subject: "partner-a"
+                    scopes: ["read"]
+                  - key: "rotate-me-in-prod"   # raw key, hashed at load
+                    subject: "partner-b"
+                    scopes: ["read", "write"]
+                require_scope_for_path:
+                  - { path_prefix: "/v1/admin", scope: "write" }
+
+        # HMAC request signing (native scheme). The client signs the canonical
+        # string  METHOD\npath\ntimestamp\nnonce\nbody-sha256  and sends the hex
+        # MAC plus the timestamp (and optionally a nonce for replay protection).
+        - match:
+            path_prefix: "/webhook/"
+          policy:
+            mode: block
+            engines:
+              hmac_sign:
+                # Either a single `secret`, or `secrets` (key-id → secret) for
+                # rotation with the client sending X-Key-Id.
+                secrets:
+                  "2024": "old-shared-secret"
+                  "2025": "current-shared-secret"
+                algorithm: sha256         # sha256 | sha512
+                window: 300s              # timestamp tolerance
+                nonce_ttl: 600s
+                require_nonce: true       # mandate a nonce (replay protection)
+                require_body_digest: true # cover the body (engine buffers it)

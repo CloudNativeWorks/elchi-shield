@@ -125,6 +125,26 @@ spec:
                 heuristics:
                   require_accept_language: true
                   score_per_anomaly: 100
+
+        # API-key authentication (header-phase).
+        - match: { path_prefix: "/apikey" }
+          policy:
+            mode: block
+            engines:
+              api_key:
+                keys:
+                  - { key: "e2e-api-key-1", subject: svc-a, scopes: ["read"] }
+                  - { key: "e2e-admin-key", subject: svc-admin, scopes: ["read", "admin"] }
+                require_scope_for_path:
+                  - { path_prefix: "/apikey/admin", scope: admin }
+        # HMAC request signing (native scheme).
+        - match: { path_prefix: "/hmac" }
+          policy:
+            mode: block
+            engines:
+              hmac_sign:
+                secret: "e2e-hmac-secret"
+                window: 300s
         - match: { path_prefix: "/waf" }
           policy:
             mode: block

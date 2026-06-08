@@ -188,6 +188,26 @@ req GET /bot "$AH" -A "$BROWSER" -H 'x-shield-ja4: t13d-known-bad-ja4' -H "$AL";
 req GET /bot "$AH" -A "$BROWSER" -H 'x-shield-ja4: t13d-curl-tool-ja4' -H "$AL"; expect "JA4 tool vs browser-UA mismatch → 403" "$CODE" 403
 req GET /bot "$AH" -A "$BROWSER";                       expect "missing Accept-Language heuristic → 403" "$CODE" 403
 
+# ==================== PHASE 5d: Engines — API-key & HMAC signing ====================
+phase "Engine: API-key & HMAC signing"
+req GET /apikey "$AH" -H 'X-Api-Key: e2e-api-key-1';   expect "valid API key → 200" "$CODE" 200
+req GET /apikey "$AH" -H 'X-Api-Key: nope';            expect "unknown API key → 403" "$CODE" 403
+req GET /apikey "$AH";                                  expect "missing API key → 403" "$CODE" 403
+req GET /apikey/admin "$AH" -H 'X-Api-Key: e2e-api-key-1'; expect "key lacks admin scope → 403" "$CODE" 403
+req GET /apikey/admin "$AH" -H 'X-Api-Key: e2e-admin-key'; expect "key with admin scope → 200" "$CODE" 200
+# HMAC: sign the canonical "METHOD\npath\nts\nnonce\ndigest" with openssl.
+HS=e2e-hmac-secret; TS=$(date +%s)
+sig(){ printf 'GET\n/hmac\n%s\n%s\n%s' "$1" "$2" "$3" | openssl dgst -sha256 -hmac "$HS" | awk '{print $NF}'; }
+SIG=$(sig "$TS" '' '')
+req GET /hmac "$AH" -H "X-Signature: $SIG" -H "X-Timestamp: $TS";  expect "valid HMAC signature → 200" "$CODE" 200
+req GET /hmac "$AH" -H "X-Signature: deadbeef00" -H "X-Timestamp: $TS"; expect "tampered signature → 403" "$CODE" 403
+req GET /hmac "$AH";                                               expect "missing signature → 403" "$CODE" 403
+OLD=$((TS-600)); SIGO=$(sig "$OLD" '' '')
+req GET /hmac "$AH" -H "X-Signature: $SIGO" -H "X-Timestamp: $OLD"; expect "stale timestamp → 403" "$CODE" 403
+NONCE="n-$TS"; SIGN=$(sig "$TS" "$NONCE" '')
+req GET /hmac "$AH" -H "X-Signature: $SIGN" -H "X-Timestamp: $TS" -H "X-Nonce: $NONCE"; expect "first nonce use → 200" "$CODE" 200
+req GET /hmac "$AH" -H "X-Signature: $SIGN" -H "X-Timestamp: $TS" -H "X-Nonce: $NONCE"; expect "replayed nonce → 403" "$CODE" 403
+
 # ==================== PHASE 6: Engines — Coraza WAF ====================
 phase "Engine: Coraza WAF (-tags coraza)"
 req POST /waf "$AH" -H 'Content-Type: text/plain' --data 'q=1 union select password from users'; expect "SQLi (union select) → 403" "$CODE" 403

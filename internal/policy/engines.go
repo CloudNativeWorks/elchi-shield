@@ -7,7 +7,9 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/apikey"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/bot"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/hmacsign"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ipreputation"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwt"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ratelimit"
@@ -119,6 +121,22 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 		engines = append(engines, e)
 	}
 
+	if ak := spec.APIKey; ak != nil {
+		e, err := buildAPIKey(ak)
+		if err != nil {
+			return nil, fmt.Errorf("api_key engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
+	if h := spec.HMACSign; h != nil {
+		e, err := buildHMACSign(h)
+		if err != nil {
+			return nil, fmt.Errorf("hmac_sign engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
 	if len(engines) == 0 {
 		return nil, nil
 	}
@@ -194,6 +212,36 @@ func buildBot(b *config.BotSpec) (engine.SecurityEngine, error) {
 		}
 	}
 	return bot.New(cfg)
+}
+
+// buildAPIKey constructs the API-key engine.
+func buildAPIKey(ak *config.APIKeySpec) (engine.SecurityEngine, error) {
+	keys := make([]apikey.KeyEntry, 0, len(ak.Keys))
+	for _, k := range ak.Keys {
+		keys = append(keys, apikey.KeyEntry{SHA256: k.SHA256, Key: k.Key, Subject: k.Subject, Scopes: k.Scopes})
+	}
+	bindings := make([]apikey.ScopeBinding, 0, len(ak.Bindings))
+	for _, b := range ak.Bindings {
+		bindings = append(bindings, apikey.ScopeBinding{PathPrefix: b.PathPrefix, Scope: b.Scope})
+	}
+	return apikey.New(apikey.Config{Source: ak.Source, Name: ak.Name, Keys: keys, Bindings: bindings})
+}
+
+// buildHMACSign constructs the HMAC request-signing engine.
+func buildHMACSign(h *config.HMACSignSpec) (engine.SecurityEngine, error) {
+	return hmacsign.New(hmacsign.Config{
+		Secret:            h.Secret,
+		Secrets:           h.Secrets,
+		SignatureHeader:   h.SignatureHeader,
+		TimestampHeader:   h.TimestampHeader,
+		NonceHeader:       h.NonceHeader,
+		KeyIDHeader:       h.KeyIDHeader,
+		Algorithm:         h.Algorithm,
+		Window:            h.Window.AsDuration(),
+		NonceTTL:          h.NonceTTL.AsDuration(),
+		RequireNonce:      h.RequireNonce,
+		RequireBodyDigest: h.RequireBodyDigest,
+	})
 }
 
 // parseSeverity maps a config severity string to a decision.Severity (default

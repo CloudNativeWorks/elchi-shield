@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -240,8 +241,60 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 		if b := s.Engines.Bot; b != nil {
 			validateBot(b, add)
 		}
+		if ak := s.Engines.APIKey; ak != nil {
+			validateAPIKey(ak, add)
+		}
+		if h := s.Engines.HMACSign; h != nil {
+			validateHMACSign(h, add)
+		}
 	}
 	return errs
+}
+
+// validateAPIKey checks the API-key engine config.
+func validateAPIKey(ak *APIKeySpec, add func(field string, err error)) {
+	switch ak.Source {
+	case "", "header", "query":
+	default:
+		add("engines.api_key.source", fmt.Errorf("invalid source %q (want header|query)", ak.Source))
+	}
+	if len(ak.Keys) == 0 {
+		add("engines.api_key.keys", errors.New("at least one key is required"))
+	}
+	for i, k := range ak.Keys {
+		p := fmt.Sprintf("engines.api_key.keys[%d]", i)
+		if k.SHA256 == "" && k.Key == "" {
+			add(p, errors.New("each key needs sha256 or key"))
+		}
+		if k.SHA256 != "" {
+			if _, err := hex.DecodeString(k.SHA256); err != nil || len(k.SHA256) != 64 {
+				add(p+".sha256", errors.New("must be a 64-char hex sha256 digest"))
+			}
+		}
+	}
+	for i, b := range ak.Bindings {
+		if b.PathPrefix == "" || b.Scope == "" {
+			add(fmt.Sprintf("engines.api_key.require_scope_for_path[%d]", i), errors.New("path_prefix and scope are required"))
+		}
+	}
+}
+
+// validateHMACSign checks the HMAC-signing engine config.
+func validateHMACSign(h *HMACSignSpec, add func(field string, err error)) {
+	if h.Secret == "" && len(h.Secrets) == 0 {
+		add("engines.hmac_sign", errors.New("secret or secrets is required"))
+	}
+	if h.Secret != "" && len(h.Secrets) > 0 {
+		add("engines.hmac_sign", errors.New("set either secret or secrets, not both"))
+	}
+	switch h.Algorithm {
+	case "", "sha256", "sha512":
+	default:
+		add("engines.hmac_sign.algorithm", fmt.Errorf("invalid algorithm %q (want sha256|sha512)", h.Algorithm))
+	}
+	if h.Window.AsDuration() < 0 {
+		add("engines.hmac_sign.window", errors.New("must be >= 0"))
+	}
 }
 
 // validateBot checks the bot-detection engine config: verified-bot feeds need a

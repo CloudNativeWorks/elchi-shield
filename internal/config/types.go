@@ -218,6 +218,53 @@ type EnginesSpec struct {
 	RateLimit    *RateLimitSpec    `yaml:"rate_limit" json:"rate_limit"`
 	IPReputation *IPReputationSpec `yaml:"ip_reputation" json:"ip_reputation"`
 	Bot          *BotSpec          `yaml:"bot" json:"bot"`
+	APIKey       *APIKeySpec       `yaml:"api_key" json:"api_key"`
+	HMACSign     *HMACSignSpec     `yaml:"hmac_sign" json:"hmac_sign"`
+}
+
+// APIKeySpec configures the header-phase API-key authentication engine. Keys are
+// stored hashed (sha256 hex) at rest; provide `sha256` or a raw `key`.
+type APIKeySpec struct {
+	// Source is "header" (default) or "query".
+	Source string `yaml:"source" json:"source"`
+	// Name is the header/query parameter carrying the key (default "X-Api-Key").
+	Name     string             `yaml:"name" json:"name"`
+	Keys     []APIKeyEntrySpec  `yaml:"keys" json:"keys"`
+	Bindings []ScopeBindingSpec `yaml:"require_scope_for_path" json:"require_scope_for_path"`
+}
+
+// APIKeyEntrySpec is one configured credential.
+type APIKeyEntrySpec struct {
+	SHA256  string   `yaml:"sha256" json:"sha256"`
+	Key     string   `yaml:"key" json:"key"`
+	Subject string   `yaml:"subject" json:"subject"`
+	Scopes  []string `yaml:"scopes" json:"scopes"`
+}
+
+// ScopeBindingSpec restricts a path prefix to keys carrying a scope.
+type ScopeBindingSpec struct {
+	PathPrefix string `yaml:"path_prefix" json:"path_prefix"`
+	Scope      string `yaml:"scope" json:"scope"`
+}
+
+// HMACSignSpec configures the HMAC request-signing engine (native scheme).
+type HMACSignSpec struct {
+	// Secret is the shared secret; or use Secrets for per-key-id rotation.
+	Secret  string            `yaml:"secret" json:"secret"`
+	Secrets map[string]string `yaml:"secrets" json:"secrets"`
+
+	SignatureHeader string `yaml:"signature_header" json:"signature_header"`
+	TimestampHeader string `yaml:"timestamp_header" json:"timestamp_header"`
+	NonceHeader     string `yaml:"nonce_header" json:"nonce_header"`
+	KeyIDHeader     string `yaml:"key_id_header" json:"key_id_header"`
+
+	// Algorithm is "sha256" (default) or "sha512".
+	Algorithm string   `yaml:"algorithm" json:"algorithm"`
+	Window    Duration `yaml:"window" json:"window"`
+	NonceTTL  Duration `yaml:"nonce_ttl" json:"nonce_ttl"`
+
+	RequireNonce      bool `yaml:"require_nonce" json:"require_nonce"`
+	RequireBodyDigest bool `yaml:"require_body_digest" json:"require_body_digest"`
 }
 
 // BotSpec configures the header-phase bot/scanner detection engine: a layered
