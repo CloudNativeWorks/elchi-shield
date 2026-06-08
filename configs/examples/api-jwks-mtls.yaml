@@ -1,0 +1,61 @@
+# Example policies for the JWKS (OAuth2/OIDC bearer) and XFCC (mTLS client-cert)
+# authentication engines. Both run at the header phase. The JWKS engine NEVER
+# fetches on the request path: a URL source is fetched once at load and refreshed
+# by a background goroutine; an unknown `kid` is a fail-posture block.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-jwks-mtls
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_close
+
+  domains:
+    - host: "secure.example.com"
+      listener_id: "lst-secure-443"
+      routes:
+        # OIDC bearer auth against a remote JWKS endpoint. Keys are cached and
+        # refreshed in the background; RS256/ES256 are pinned (blocks alg:none /
+        # algorithm-confusion).
+        - match:
+            path_prefix: "/api/"
+          policy:
+            mode: block
+            engines:
+              jwks:
+                url: "https://idp.example.com/.well-known/jwks.json"
+                refresh_interval: 10m
+                http_timeout: 5s
+                issuer: "https://idp.example.com/"
+                audience: "secure-api"
+                algorithms: ["RS256", "ES256"]
+                required_claims: ["sub"]
+                leeway: 30s
+
+        # Local JWKS file (written by the management plane, hot-reloaded) — no
+        # network egress from the sidecar.
+        - match:
+            path_prefix: "/internal/"
+          policy:
+            mode: block
+            engines:
+              jwks:
+                file: "/etc/elchi/elchi-shield/keys/jwks.json"
+                algorithms: ["RS256"]
+                audience: "internal"
+
+        # mTLS identity: require a client cert whose SPIFFE ID (or DNS SAN /
+        # subject / fingerprint) is allow-listed. Envoy must set XFCC from the
+        # verified peer cert (set_current_client_cert_details + SANITIZE_SET).
+        - match:
+            path_prefix: "/mtls/"
+          policy:
+            mode: block
+            engines:
+              xfcc:
+                require_present: true
+                uris:
+                  - "spiffe://cluster.local/ns/payments/sa/checkout"
+                dns_names:
+                  - "checkout.payments.svc"

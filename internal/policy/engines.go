@@ -12,8 +12,10 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/hmacsign"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/httpsig"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ipreputation"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwks"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/jwt"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine/ratelimit"
+	"github.com/cloudnativeworks/elchi-shield/internal/engine/xfcc"
 )
 
 // engineCache deduplicates engine.Set construction within a single reload. It is
@@ -147,6 +149,40 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 		})
 		if err != nil {
 			return nil, fmt.Errorf("http_signature engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
+	if j := spec.JWKS; j != nil {
+		e, err := jwks.New(jwks.Config{
+			File:            j.File,
+			URL:             j.URL,
+			Issuer:          j.Issuer,
+			Audience:        j.Audience,
+			Algorithms:      j.Algorithms,
+			RequiredClaims:  j.RequiredClaims,
+			HeaderName:      j.HeaderName,
+			Leeway:          j.Leeway.AsDuration(),
+			RefreshInterval: j.RefreshInterval.AsDuration(),
+			HTTPTimeout:     j.HTTPTimeout.AsDuration(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("jwks engine: %w", err)
+		}
+		engines = append(engines, e)
+	}
+
+	if x := spec.XFCC; x != nil {
+		e, err := xfcc.New(xfcc.Config{
+			HeaderName:     x.HeaderName,
+			RequirePresent: x.RequirePresent,
+			URIs:           x.URIs,
+			DNSNames:       x.DNSNames,
+			Subjects:       x.Subjects,
+			Hashes:         x.Hashes,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("xfcc engine: %w", err)
 		}
 		engines = append(engines, e)
 	}

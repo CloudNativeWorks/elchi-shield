@@ -255,6 +255,19 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 				add("engines.http_signature.max_age", errors.New("must be >= 0"))
 			}
 		}
+		if j := s.Engines.JWKS; j != nil {
+			if (j.File == "") == (j.URL == "") {
+				add("engines.jwks", errors.New("exactly one of file or url is required"))
+			}
+			if len(j.Algorithms) == 0 {
+				add("engines.jwks.algorithms", errors.New("at least one algorithm is required"))
+			}
+		}
+		if x := s.Engines.XFCC; x != nil {
+			if !x.RequirePresent && len(x.URIs)+len(x.DNSNames)+len(x.Subjects)+len(x.Hashes) == 0 {
+				add("engines.xfcc", errors.New("require_present or at least one allow-list dimension is required"))
+			}
+		}
 	}
 	return errs
 }

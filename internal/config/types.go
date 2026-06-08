@@ -221,6 +221,35 @@ type EnginesSpec struct {
 	APIKey        *APIKeySpec        `yaml:"api_key" json:"api_key"`
 	HMACSign      *HMACSignSpec      `yaml:"hmac_sign" json:"hmac_sign"`
 	HTTPSignature *HTTPSignatureSpec `yaml:"http_signature" json:"http_signature"`
+	JWKS          *JWKSSpec          `yaml:"jwks" json:"jwks"`
+	XFCC          *XFCCSpec          `yaml:"xfcc" json:"xfcc"`
+}
+
+// JWKSSpec configures the header-phase JWKS JWT engine. Keys come from a local
+// `file` (hot-reloaded, no network) or a remote `url` (fetched once at load,
+// then refreshed in the background — never on the request path).
+type JWKSSpec struct {
+	File            string   `yaml:"file" json:"file"`
+	URL             string   `yaml:"url" json:"url"`
+	Issuer          string   `yaml:"issuer" json:"issuer"`
+	Audience        string   `yaml:"audience" json:"audience"`
+	Algorithms      []string `yaml:"algorithms" json:"algorithms"`
+	RequiredClaims  []string `yaml:"required_claims" json:"required_claims"`
+	HeaderName      string   `yaml:"header_name" json:"header_name"`
+	Leeway          Duration `yaml:"leeway" json:"leeway"`
+	RefreshInterval Duration `yaml:"refresh_interval" json:"refresh_interval"`
+	HTTPTimeout     Duration `yaml:"http_timeout" json:"http_timeout"`
+}
+
+// XFCCSpec configures the mTLS client-certificate (XFCC) engine. The allow-list
+// dimensions are OR'd; an empty allow-list with require_present is presence-only.
+type XFCCSpec struct {
+	HeaderName     string   `yaml:"header_name" json:"header_name"`
+	RequirePresent bool     `yaml:"require_present" json:"require_present"`
+	URIs           []string `yaml:"uris" json:"uris"`
+	DNSNames       []string `yaml:"dns_names" json:"dns_names"`
+	Subjects       []string `yaml:"subjects" json:"subjects"`
+	Hashes         []string `yaml:"hashes" json:"hashes"`
 }
 
 // HTTPSignatureSpec configures the RFC 9421 (HTTP Message Signatures) engine

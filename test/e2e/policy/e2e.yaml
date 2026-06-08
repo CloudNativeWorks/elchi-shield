@@ -153,6 +153,29 @@ spec:
               http_signature:
                 secret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
                 covered_components: ["@method", "@authority", "@path"]
+        # JWT validation via a local JWKS file (RS256). __CFG__ → live config dir.
+        - match: { path_prefix: "/jwks" }
+          policy:
+            mode: block
+            engines:
+              jwks:
+                file: "__CFG__/jwks.keyset"
+                algorithms: ["RS256"]
+                audience: "api"
+                required_claims: ["sub"]
+        # mTLS client-cert identity via the forwarded XFCC header. In production
+        # Envoy sets x-forwarded-client-cert from the verified peer cert; on this
+        # plaintext e2e listener Envoy would strip that header, so the harness
+        # injects the same XFCC-format value via a custom header name.
+        - match: { path_prefix: "/xfcc" }
+          policy:
+            mode: block
+            engines:
+              xfcc:
+                header_name: "x-test-client-cert"
+                require_present: true
+                uris: ["spiffe://cluster/ns/team/sa/web"]
+                dns_names: ["client.example.com"]
         - match: { path_prefix: "/waf" }
           policy:
             mode: block

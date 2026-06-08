@@ -36,6 +36,7 @@ H(){ printf -- '-HHost:%s' "$1"; }   # host header arg
 ( cd "$ROOT" && go build -tags "coraza httpsig" -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
 go build -o "$DIR/gentoken.bin" "$DIR/gentoken" || { echo "gentoken build failed"; exit 1; }
 go build -o "$DIR/gensig.bin" "$DIR/gensig" || { echo "gensig build failed"; exit 1; }
+go build -o "$DIR/genjwks.bin" "$DIR/genjwks" || { echo "genjwks build failed"; exit 1; }
 # Build the echo to a binary (not `go run`) so the PID we track IS the listener —
 # `go run` leaves a child process holding the port that a kill of $! would miss.
 go build -o "$DIR/echo.bin" "$DIR/echo" || { echo "echo build failed"; exit 1; }
@@ -49,8 +50,12 @@ printf '# e2e threat feed\n198.51.100.0/24\n2001:db8:bad::/48\n' > "$CFG/threat-
 cp "$ROOT/internal/geoip/testdata/GeoLite2-Country-Test.mmdb" "$CFG/geo-country.mmdb"
 # Verified-bot IP feed for the bot engine (a Googlebot range).
 printf '# googlebot ranges\n66.249.64.0/19\n' > "$CFG/googlebot.txt"
+# JWKS file + RS256 tokens for the jwks engine (valid token line 1, invalid line 2).
+JWT_OUT=$("$DIR/genjwks.bin" -out "$CFG/jwks.keyset" -kid k1 -aud api)
+JWKS_VALID=$(printf '%s\n' "$JWT_OUT" | sed -n 1p)
+JWKS_BAD=$(printf '%s\n' "$JWT_OUT" | sed -n 2p)
 PIDS=()
-cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/gentoken.bin" "$DIR/gensig.bin" "$DIR/echo.bin" "$ROWS" /tmp/eh /tmp/eb /tmp/*.gz /tmp/good.zz; }
+cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/gentoken.bin" "$DIR/gensig.bin" "$DIR/genjwks.bin" "$DIR/echo.bin" "$ROWS" /tmp/eh /tmp/eb /tmp/*.gz /tmp/good.zz; }
 trap cleanup EXIT
 
 ECHO_ADDR=127.0.0.1:18080 "$DIR/echo.bin" & PIDS+=($!)
@@ -217,6 +222,16 @@ req GET /sig "$AH";                                                   expect "mi
 SO2=$("$DIR/gensig.bin" -secret "$SIGSECRET" -method GET -host api.example.com -path /other)
 RSI2=$(printf '%s\n' "$SO2" | sed -n 1p); RSIG2=$(printf '%s\n' "$SO2" | sed -n 2p)
 req GET /sig "$AH" -H "Signature-Input: $RSI2" -H "Signature: $RSIG2"; expect "signature for a different path → 403" "$CODE" 403
+
+# ==================== PHASE 5e: Engines — JWKS & mTLS (XFCC) ====================
+phase "Engine: JWKS & mTLS (XFCC)"
+req GET /jwks "$AH" -H "Authorization: Bearer $JWKS_VALID"; expect "valid RS256 (JWKS file) → 200" "$CODE" 200
+req GET /jwks "$AH" -H "Authorization: Bearer $JWKS_BAD";   expect "token signed by non-JWKS key → 403" "$CODE" 403
+req GET /jwks "$AH";                                        expect "missing JWT → 403" "$CODE" 403
+req GET /xfcc "$AH" -H 'x-test-client-cert: URI=spiffe://cluster/ns/team/sa/web'; expect "XFCC SPIFFE URI allow-listed → 200" "$CODE" 200
+req GET /xfcc "$AH" -H 'x-test-client-cert: DNS=client.example.com';              expect "XFCC DNS allow-listed → 200" "$CODE" 200
+req GET /xfcc "$AH" -H 'x-test-client-cert: URI=spiffe://cluster/ns/evil/sa/x';   expect "XFCC identity not allow-listed → 403" "$CODE" 403
+req GET /xfcc "$AH";                                        expect "XFCC required but absent → 403" "$CODE" 403
 
 # ==================== PHASE 6: Engines — Coraza WAF ====================
 phase "Engine: Coraza WAF (-tags coraza)"
