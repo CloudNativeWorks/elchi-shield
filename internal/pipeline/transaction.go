@@ -85,6 +85,11 @@ type Transaction struct {
 	// end-of-stream arrives on the headers, a body chunk, or the trailers message.
 	bodyInspected bool
 
+	// bodyMutated is set when an inspector rewrote the body for FORWARDING (DLP
+	// redaction), so the server replaces the data-plane body with tx.body via an
+	// ext_proc BodyMutation. Distinct from ReplaceBody's inspection-only swap.
+	bodyMutated bool
+
 	// bodyReserved is the cumulative bytes this stream has reserved from the
 	// shared body budget (charged as chunks are buffered, released at stream end).
 	// It is server-owned bookkeeping kept here because the Transaction is the
@@ -196,6 +201,17 @@ func (tx *Transaction) BodyTruncated() bool { return tx.bodyTruncated }
 // SetBodyTruncated records that the body exceeded the configured size cap.
 func (tx *Transaction) SetBodyTruncated(v bool) { tx.bodyTruncated = v }
 
+// MutateBody replaces the body with redacted bytes to be FORWARDED to the data
+// plane (DLP). Unlike ReplaceBody (inspection-only), this marks the body as
+// mutated so the server emits an ext_proc BodyMutation.
+func (tx *Transaction) MutateBody(b []byte) {
+	tx.body = b
+	tx.bodyMutated = true
+}
+
+// BodyMutated reports whether the body was rewritten for forwarding.
+func (tx *Transaction) BodyMutated() bool { return tx.bodyMutated }
+
 // BodyInspected reports whether the body inspect pipeline already ran for the
 // current direction.
 func (tx *Transaction) BodyInspected() bool { return tx.bodyInspected }
@@ -246,6 +262,7 @@ func (tx *Transaction) BeginResponse() {
 	tx.body = tx.body[:0]
 	tx.bodyTruncated = false
 	tx.bodyInspected = false
+	tx.bodyMutated = false
 	tx.bodyRequired = false
 	tx.wafEnabled = false
 	// Release the request body's budget reservation now that it is no longer
@@ -296,6 +313,7 @@ func (tx *Transaction) Reset() {
 	tx.wafEnabled = false
 	tx.bodyTruncated = false
 	tx.bodyInspected = false
+	tx.bodyMutated = false
 	tx.bodyReserved = 0
 	if cap(tx.body) > retainedBodyCap {
 		tx.body = nil

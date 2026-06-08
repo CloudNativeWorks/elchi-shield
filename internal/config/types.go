@@ -488,4 +488,20 @@ type BodyChecks struct {
 	RequireJSON bool `yaml:"require_json" json:"require_json"`
 	// DetectSensitiveData enables the sensitive-data detection hook (Phase 3+).
 	DetectSensitiveData bool `yaml:"detect_sensitive_data" json:"detect_sensitive_data"`
+	// DLP enables data-loss-prevention: block or redact sensitive data in the
+	// body (typically the response).
+	DLP *DLPSpec `yaml:"dlp" json:"dlp"`
+}
+
+// DLPSpec configures data-loss prevention. The detector kinds are: credit_card,
+// ssn, email, jwt, aws_access_key, private_key, google_api_key, slack_token,
+// github_token. A kind listed in `block` blocks the message; a kind in `redact`
+// is masked in place. Anything not listed is ignored.
+type DLPSpec struct {
+	// Direction selects where DLP runs: "response" (default), "request", or "both".
+	Direction string `yaml:"direction" json:"direction"`
+	// Block lists kinds that cause a block (e.g. private_key, aws_access_key).
+	Block []string `yaml:"block" json:"block"`
+	// Redact lists kinds masked in place (e.g. credit_card, ssn, email, jwt).
+	Redact []string `yaml:"redact" json:"redact"`
 }

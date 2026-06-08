@@ -194,6 +194,10 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 		validateOrder("pipeline.response", s.Pipeline.Response)
 	}
 
+	if s.Checks.Body != nil && s.Checks.Body.DLP != nil {
+		validateDLP(s.Checks.Body.DLP, add)
+	}
+
 	if s.Engines != nil {
 		if j := s.Engines.JWT; j != nil {
 			if len(j.Algorithms) == 0 {
@@ -281,6 +285,29 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 		}
 	}
 	return errs
+}
+
+// knownDLPKinds is the set of sensitive-data kinds the detector can produce.
+var knownDLPKinds = map[string]struct{}{
+	"credit_card": {}, "ssn": {}, "email": {}, "jwt": {}, "aws_access_key": {},
+	"private_key": {}, "google_api_key": {}, "slack_token": {}, "github_token": {},
+}
+
+// validateDLP checks the DLP config: a known direction and known kinds.
+func validateDLP(d *DLPSpec, add func(field string, err error)) {
+	switch d.Direction {
+	case "", "response", "request", "both":
+	default:
+		add("checks.body.dlp.direction", fmt.Errorf("invalid direction %q (want response|request|both)", d.Direction))
+	}
+	if len(d.Block) == 0 && len(d.Redact) == 0 {
+		add("checks.body.dlp", errors.New("at least one block or redact kind is required"))
+	}
+	for _, k := range append(append([]string{}, d.Block...), d.Redact...) {
+		if _, ok := knownDLPKinds[k]; !ok {
+			add("checks.body.dlp", fmt.Errorf("unknown DLP kind %q", k))
+		}
+	}
 }
 
 // validateAPIKey checks the API-key engine config.

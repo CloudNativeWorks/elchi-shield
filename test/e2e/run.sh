@@ -265,6 +265,18 @@ req POST /graphql "$AH" -H "$GQ" --data '[{"query":"{a}"},{"query":"{b}"},{"quer
 req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a {"}';                           expect "malformed query → 403" "$CODE" 403
 req POST /graphql "$AH" -H 'Content-Type: text/plain' --data 'not graphql';           expect "non-GraphQL content-type → passthrough (200)" "$CODE" 200
 
+# ==================== PHASE 5h: DLP / response redaction ====================
+phase "DLP: response redaction"
+req GET '/dlp?resp=pii' "$AH";   expect "card response allowed (redacted) → 200" "$CODE" 200
+DB=$(cat /tmp/eb)
+case "$DB" in
+  *'4111 1111 1111 1111'*) F "DLP: credit card NOT redacted in response body";;
+  *'*'*)                   P "DLP: credit card masked in response body (last4 kept)";;
+  *)                       F "DLP: unexpected response body: $DB";;
+esac
+req GET '/dlp?resp=privkey' "$AH"; expect "private key in response → blocked (403)" "$CODE" 403
+req GET '/dlp?resp=json' "$AH";    expect "clean response → 200" "$CODE" 200
+
 # ==================== PHASE 5g: Engine — OpenAPI positive validation ====================
 phase "Engine: OpenAPI validation (-tags openapi)"
 req GET '/oas/users/5?q=hi' "$AH";                     expect "conforming request → 200" "$CODE" 200

@@ -33,6 +33,9 @@ func main() {
 		case "coraza":
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprint(w, "internal leak: CORAZA_RESP_HIT in payload")
+		case "privkey":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(w, "oops -----BEGIN PRIVATE KEY-----\nMIIEvQ...\n leaked")
 		default:
 			_, _ = fmt.Fprintf(w, "echo %s %s\n", r.Method, r.URL.Path)
 		}

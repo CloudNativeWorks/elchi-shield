@@ -9,6 +9,8 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/pipeline"
+	"github.com/cloudnativeworks/elchi-shield/internal/policy"
+	"github.com/cloudnativeworks/elchi-shield/internal/sensitive"
 )
 
 // SensitiveDataDetector is the hook interface for detecting sensitive data in a
@@ -18,6 +20,8 @@ type SensitiveDataDetector interface {
 	// Scan inspects body for sensitive data given its content type. It returns
 	// whether something was found and a short kind label for attribution.
 	Scan(ctx context.Context, contentType string, body []byte) (found bool, kind string)
+	// Matches returns located findings (byte offsets + kind) for DLP redaction.
+	Matches(body []byte) []sensitive.Match
 }
 
 // bodyGate decides whether the body must be buffered/inspected for this request,
@@ -125,7 +129,102 @@ func (b *bodyChecks) Process(ctx context.Context, tx *pipeline.Transaction) pipe
 		}
 	}
 
+	if dlp := c.DLP; dlp != nil && b.detector != nil && dlpApplies(dlp, tx.Direction) && len(body) > 0 {
+		if res, done := b.runDLP(tx, dlp, body); done {
+			return res
+		}
+	}
+
 	return pipeline.Continue()
+}
+
+// dlpApplies reports whether DLP runs for the given direction.
+func dlpApplies(dlp *policy.CompiledDLP, dir pipeline.Direction) bool {
+	if dir == pipeline.DirectionResponse {
+		return dlp.OnResponse
+	}
+	return dlp.OnRequest
+}
+
+// runDLP applies the DLP policy to body: a configured `block` kind blocks; any
+// `redact` kind is masked in place and the body is mutated for forwarding. It
+// returns (deny-result, true) on a block, or (Continue, false) otherwise (the
+// caller continues; the mutation, if any, is already recorded on tx).
+func (b *bodyChecks) runDLP(tx *pipeline.Transaction, dlp *policy.CompiledDLP, body []byte) (pipeline.StageResult, bool) {
+	matches := b.detector.Matches(body)
+	if len(matches) == 0 {
+		return pipeline.Continue(), false
+	}
+	// Block takes precedence over redaction (fail closed on a hard secret).
+	for _, m := range matches {
+		if _, ok := dlp.Block[m.Kind]; ok {
+			return deny(tx, "body.dlp_block:"+m.Kind, "blocked sensitive data: "+m.Kind, decision.SeverityHigh), true
+		}
+	}
+	redacted, changed := redactBody(body, matches, dlp.Redact)
+	if changed {
+		tx.MutateBody(redacted)
+	}
+	return pipeline.Continue(), false
+}
+
+// redactBody rewrites body in a single left-to-right pass, masking each match
+// whose kind is in the redact set. Credit cards keep their last 4 digits; other
+// kinds become a [REDACTED:<kind>] tag. Returns the new body and whether any
+// redaction occurred.
+func redactBody(body []byte, matches []sensitive.Match, redact map[string]struct{}) ([]byte, bool) {
+	out := make([]byte, 0, len(body))
+	last := 0
+	changed := false
+	for _, m := range matches {
+		if _, ok := redact[m.Kind]; !ok {
+			continue
+		}
+		if m.Start < last { // overlap guard
+			continue
+		}
+		out = append(out, body[last:m.Start]...)
+		out = append(out, mask(body[m.Start:m.End], m.Kind)...)
+		last = m.End
+		changed = true
+	}
+	if !changed {
+		return body, false
+	}
+	out = append(out, body[last:]...)
+	return out, true
+}
+
+// mask produces the replacement bytes for a redacted match.
+func mask(orig []byte, kind string) []byte {
+	if kind == "credit_card" {
+		// Keep the last 4 digits, mask the rest (preserve length/shape).
+		digits := 0
+		for _, c := range orig {
+			if c >= '0' && c <= '9' {
+				digits++
+			}
+		}
+		seen := 0
+		out := make([]byte, len(orig))
+		for i, c := range orig {
+			switch {
+			case c == ' ' || c == '-':
+				out[i] = c
+			case c >= '0' && c <= '9':
+				seen++
+				if seen > digits-4 {
+					out[i] = c
+				} else {
+					out[i] = '*'
+				}
+			default:
+				out[i] = c
+			}
+		}
+		return out
+	}
+	return []byte("[REDACTED:" + kind + "]")
 }
 
 // isJSONContentType reports whether the media type denotes JSON

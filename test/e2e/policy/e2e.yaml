@@ -268,6 +268,17 @@ spec:
             mode: block
             inspect_response_body: true
             checks: { body: { detect_sensitive_data: true } }
+        # DLP: redact PII / block hard secrets in the response body.
+        - match: { path_prefix: "/dlp" }
+          policy:
+            mode: block
+            inspect_response_body: true
+            checks:
+              body:
+                dlp:
+                  direction: response
+                  block: ["private_key", "aws_access_key"]
+                  redact: ["credit_card", "email", "ssn", "jwt"]
 
     # ---- A different exact host: monitor only (off) → proves host-specific routing. ----
     - host: "other.example.com"

@@ -67,6 +67,16 @@ type CompiledChecks struct {
 	EnforceValidHost    bool
 	RequireJSON         bool
 	DetectSensitiveData bool
+	DLP                 *CompiledDLP
+}
+
+// CompiledDLP is the hot-path form of the DLP config: which directions it runs
+// on and the per-kind block/redact sets.
+type CompiledDLP struct {
+	OnRequest  bool
+	OnResponse bool
+	Block      map[string]struct{}
+	Redact     map[string]struct{}
 }
 
 // compileChecks flattens config.Checks into the hot-path CompiledChecks.
@@ -81,8 +91,28 @@ func compileChecks(c config.Checks) CompiledChecks {
 	if c.Body != nil {
 		out.RequireJSON = c.Body.RequireJSON
 		out.DetectSensitiveData = c.Body.DetectSensitiveData
+		if d := c.Body.DLP; d != nil {
+			out.DLP = compileDLP(d)
+		}
 	}
 	return out
+}
+
+// compileDLP flattens a config.DLPSpec into the hot-path CompiledDLP.
+func compileDLP(d *config.DLPSpec) *CompiledDLP {
+	cd := &CompiledDLP{
+		OnResponse: d.Direction == "" || d.Direction == "response" || d.Direction == "both",
+		OnRequest:  d.Direction == "request" || d.Direction == "both",
+		Block:      make(map[string]struct{}, len(d.Block)),
+		Redact:     make(map[string]struct{}, len(d.Redact)),
+	}
+	for _, k := range d.Block {
+		cd.Block[k] = struct{}{}
+	}
+	for _, k := range d.Redact {
+		cd.Redact[k] = struct{}{}
+	}
+	return cd
 }
 
 // FromResolved builds a CompiledPolicy from a fully-resolved config policy. The

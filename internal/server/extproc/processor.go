@@ -257,6 +257,9 @@ func (pr *Processor) onRequestBody(ctx context.Context, tx *pipeline.Transaction
 	if bd := pr.inspectBufferedBody(ctx, tx, start); bd != nil && bd.IsBlock() {
 		return immediateResponse(bd)
 	}
+	if tx.BodyMutated() { // DLP redaction rewrote the request body for forwarding
+		return requestBodyMutation(tx.Body())
+	}
 	return requestBodyContinue()
 }
 
@@ -311,6 +314,9 @@ func (pr *Processor) onResponseBody(ctx context.Context, tx *pipeline.Transactio
 	}
 	if bd := pr.inspectBufferedBody(ctx, tx, start); bd != nil && bd.IsBlock() {
 		return immediateResponse(bd)
+	}
+	if tx.BodyMutated() { // DLP redaction rewrote the body for forwarding
+		return responseBodyMutation(tx.Body())
 	}
 	return responseBodyContinue()
 }
@@ -654,6 +660,36 @@ func responseBodyContinue() *extprocv3.ProcessingResponse {
 	return &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_ResponseBody{
 			ResponseBody: &extprocv3.BodyResponse{Response: &extprocv3.CommonResponse{Status: extprocv3.CommonResponse_CONTINUE}},
+		},
+	}
+}
+
+// bodyMutationCommon builds the CommonResponse that replaces the data-plane body
+// with the (redacted) bytes. Because the buffered body the inspectors saw is the
+// DECODED payload, the mutation strips Content-Encoding so the client receives a
+// correct identity-encoded response; Envoy recomputes Content-Length from the
+// mutated body, so we do not set it ourselves (a manual Content-Length conflicts
+// with Envoy's own length management and drops the body).
+func bodyMutationCommon(body []byte) *extprocv3.CommonResponse {
+	return &extprocv3.CommonResponse{
+		Status:         extprocv3.CommonResponse_CONTINUE,
+		BodyMutation:   &extprocv3.BodyMutation{Mutation: &extprocv3.BodyMutation_Body{Body: body}},
+		HeaderMutation: &extprocv3.HeaderMutation{RemoveHeaders: []string{"content-encoding"}},
+	}
+}
+
+func responseBodyMutation(body []byte) *extprocv3.ProcessingResponse {
+	return &extprocv3.ProcessingResponse{
+		Response: &extprocv3.ProcessingResponse_ResponseBody{
+			ResponseBody: &extprocv3.BodyResponse{Response: bodyMutationCommon(body)},
+		},
+	}
+}
+
+func requestBodyMutation(body []byte) *extprocv3.ProcessingResponse {
+	return &extprocv3.ProcessingResponse{
+		Response: &extprocv3.ProcessingResponse_RequestBody{
+			RequestBody: &extprocv3.BodyResponse{Response: bodyMutationCommon(body)},
 		},
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/pipeline"
 	"github.com/cloudnativeworks/elchi-shield/internal/policy"
 	"github.com/cloudnativeworks/elchi-shield/internal/runtime"
+	"github.com/cloudnativeworks/elchi-shield/internal/sensitive"
 )
 
 func hdrs(pairs ...string) []pipeline.Header {
@@ -289,6 +290,8 @@ type fakeDetector struct{ found bool }
 func (f fakeDetector) Scan(context.Context, string, []byte) (bool, string) {
 	return f.found, "credit_card"
 }
+
+func (f fakeDetector) Matches([]byte) []sensitive.Match { return nil }
 
 func TestBodyChecksSensitiveData(t *testing.T) {
 	pol := compiled(config.ModeBlock, config.Checks{Body: &config.BodyChecks{DetectSensitiveData: true}})
