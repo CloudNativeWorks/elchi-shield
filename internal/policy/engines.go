@@ -200,6 +200,7 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 			MaxOperations:      g.MaxOperations,
 			BlockIntrospection: g.BlockIntrospection,
 			MaxFragmentDepth:   g.MaxFragmentDepth,
+			MaxComplexity:      g.MaxComplexity,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("graphql engine: %w", err)

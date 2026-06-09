@@ -37,7 +37,17 @@ type Config struct {
 	MaxOperations      int // batched (JSON array) operation cap; 0 → 1
 	BlockIntrospection bool
 	MaxFragmentDepth   int // fragment-spread recursion bound (default 32)
+	// MaxComplexity bounds the TOTAL selection nodes walked per operation (after
+	// fragment expansion). It is a hard backstop against a fragment "bomb" — a
+	// tiny query whose fragments fan out to exponential nodes — that the
+	// cycle-only bound cannot stop. Default 100000; always enforced.
+	MaxComplexity int
 }
+
+// defaultMaxComplexity is the per-operation node-visit budget when MaxComplexity
+// is unset. Generous for real queries (hundreds–thousands of nodes), tight
+// enough that an expanding fragment bomb aborts in well under a millisecond.
+const defaultMaxComplexity = 100000
 
 // Engine is the compiled, immutable GraphQL guard.
 type Engine struct {
@@ -45,6 +55,7 @@ type Engine struct {
 	paths        []string
 	cfg          Config
 	maxFragDepth int
+	maxNodes     int
 }
 
 // New compiles the configuration into an Engine.
@@ -60,7 +71,11 @@ func New(cfg Config) (*Engine, error) {
 	if fragDepth <= 0 {
 		fragDepth = 32
 	}
-	return &Engine{contentTypes: cts, paths: cfg.Paths, cfg: cfg, maxFragDepth: fragDepth}, nil
+	maxNodes := cfg.MaxComplexity
+	if maxNodes <= 0 {
+		maxNodes = defaultMaxComplexity
+	}
+	return &Engine{contentTypes: cts, paths: cfg.Paths, cfg: cfg, maxFragDepth: fragDepth, maxNodes: maxNodes}, nil
 }
 
 // Name implements engine.SecurityEngine.
@@ -131,12 +146,22 @@ func (e *Engine) checkQuery(q string) (decision.Verdict, bool) {
 	for _, f := range doc.Fragments {
 		fragments[f.Name] = f
 	}
+	// A single document can carry many operations; cap them here too (the JSON
+	// batch array is capped separately in Inspect) so a thousand operations in one
+	// query can't each trigger a full walk.
+	if e.cfg.MaxOperations > 0 && len(doc.Operations) > e.cfg.MaxOperations {
+		return block("graphql.operations", fmt.Sprintf("operations %d exceed max %d", len(doc.Operations), e.cfg.MaxOperations)), true
+	}
 	for _, op := range doc.Operations {
 		st := &stats{}
 		visited := make(map[string]int)
 		e.walk(op.SelectionSet, 1, fragments, visited, st)
 
-		if e.cfg.MaxRootFields > 0 && countTopFields(op.SelectionSet) > e.cfg.MaxRootFields {
+		// A bomb that blew the node budget is blocked rather than analyzed further.
+		if st.aborted {
+			return block("graphql.complexity", "query is too complex to analyze safely"), true
+		}
+		if e.cfg.MaxRootFields > 0 && st.rootFields > e.cfg.MaxRootFields {
 			return block("graphql.root_fields", "too many root fields"), true
 		}
 		if e.cfg.MaxDepth > 0 && st.depth > e.cfg.MaxDepth {
@@ -158,21 +183,40 @@ func (e *Engine) checkQuery(q string) (decision.Verdict, bool) {
 type stats struct {
 	depth         int
 	fields        int
+	rootFields    int // fields at depth 1, counted THROUGH top-level fragments
 	aliases       int
 	introspection bool
+	nodes         int  // total selections visited (fragment-expanded)
+	aborted       bool // node budget exceeded → stop and block
 }
 
 // walk is a depth-first traversal accumulating stats. Fragment spreads are
-// followed with a per-fragment recursion bound so a cyclic fragment cannot hang
-// the guard.
+// followed with a per-fragment recursion bound (cycle guard) AND a total
+// node-visit budget (st.nodes vs e.maxNodes) so neither a cyclic fragment nor a
+// non-cyclic fragment that fans out exponentially can hang the guard.
 func (e *Engine) walk(sel ast.SelectionSet, depth int, frags map[string]*ast.FragmentDefinition, visited map[string]int, st *stats) {
+	if st.aborted {
+		return
+	}
 	if depth > st.depth {
 		st.depth = depth
 	}
 	for _, s := range sel {
+		st.nodes++
+		if st.nodes > e.maxNodes {
+			st.aborted = true
+			return
+		}
 		switch f := s.(type) {
 		case *ast.Field:
 			st.fields++
+			// Root fields are those at depth 1, including ones exposed via a
+			// top-level fragment spread or inline fragment (both walked at the same
+			// depth) — so MaxRootFields can't be dodged by wrapping them in a
+			// fragment.
+			if depth == 1 {
+				st.rootFields++
+			}
 			if f.Alias != "" && f.Alias != f.Name {
 				st.aliases++
 			}
@@ -196,17 +240,10 @@ func (e *Engine) walk(sel ast.SelectionSet, depth int, frags map[string]*ast.Fra
 			e.walk(def.SelectionSet, depth, frags, visited, st)
 			visited[f.Name]--
 		}
-	}
-}
-
-func countTopFields(sel ast.SelectionSet) int {
-	n := 0
-	for _, s := range sel {
-		if _, ok := s.(*ast.Field); ok {
-			n++
+		if st.aborted {
+			return
 		}
 	}
-	return n
 }
 
 // extractQueries pulls the GraphQL query strings from the request body. It

@@ -2,7 +2,10 @@ package graphql
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
@@ -124,6 +127,55 @@ func TestFragmentCycleBounded(t *testing.T) {
 	}
 	if v := inspect(t, e, post(q)); v.Action != decision.Block && v.Action != decision.Continue {
 		t.Fatalf("cyclic fragment should be handled, got %+v", v)
+	}
+}
+
+func TestFragmentBombBounded(t *testing.T) {
+	// A non-cyclic fragment fan-out (each Fi spreads F(i+1) twice) expands to 2^n
+	// nodes. The node budget must abort and block in well under a second, not hang.
+	var b strings.Builder
+	b.WriteString("query { ...F0 } ")
+	const n = 40
+	for i := range n {
+		fmt.Fprintf(&b, "fragment F%d on T { ...F%d ...F%d } ", i, i+1, i+1)
+	}
+	fmt.Fprintf(&b, "fragment F%d on T { x }", n)
+	e, _ := New(Config{MaxDepth: 1000, MaxTotalFields: 100000})
+	req := &engine.Request{Direction: engine.DirectionRequest, Method: "POST", Path: "/graphql",
+		ContentType: "application/graphql", Body: []byte(b.String()), Headers: hdrs{}}
+
+	done := make(chan decision.Verdict, 1)
+	go func() { v, _ := e.Inspect(context.Background(), req); done <- v }()
+	select {
+	case v := <-done:
+		if v.RuleID != "graphql.complexity" {
+			t.Fatalf("fragment bomb should be blocked as too complex, got %+v", v)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fragment bomb hung the guard (node budget not enforced)")
+	}
+}
+
+func TestRootFieldsThroughFragmentNotBypassed(t *testing.T) {
+	// Wrapping root fields in a top-level fragment / inline fragment must NOT dodge
+	// MaxRootFields — they are still root fields.
+	e, _ := New(Config{MaxRootFields: 2})
+	viaFragment := jsonQ(`query { ...R } fragment R on Query { a b c }`)
+	if v := inspect(t, e, post(viaFragment)); v.RuleID != "graphql.root_fields" {
+		t.Fatalf("root fields via a fragment spread should still count, got %+v", v)
+	}
+	viaInline := jsonQ(`query { ... on Query { a b c } }`)
+	if v := inspect(t, e, post(viaInline)); v.RuleID != "graphql.root_fields" {
+		t.Fatalf("root fields via an inline fragment should still count, got %+v", v)
+	}
+}
+
+func TestOperationsPerDocumentCapped(t *testing.T) {
+	// Many operations inside ONE query document (not a JSON batch array) are capped.
+	e, _ := New(Config{MaxOperations: 2, MaxDepth: 10})
+	q := jsonQ(`query A { a } query B { b } query C { c }`)
+	if v := inspect(t, e, post(q)); v.RuleID != "graphql.operations" {
+		t.Fatalf("3 operations in one document should block, got %+v", v)
 	}
 }
 

@@ -275,6 +275,10 @@ req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a { b { c { d { e } } } } }
 req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ __schema { types { name } } }"}'; expect "introspection → 403" "$CODE" 403
 req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a: f b: f c: f d: f }"}';         expect "aliases > 3 → 403" "$CODE" 403
 req POST /graphql "$AH" -H "$GQ" --data '[{"query":"{a}"},{"query":"{b}"},{"query":"{c}"}]'; expect "batch > 2 → 403" "$CODE" 403
+# Fragment bomb: a ~1KB query whose fragments fan out to 2^30 nodes. The node
+# budget must block it fast (a hang here would stall the whole suite).
+FB='query { ...F0 }'; for i in $(seq 0 29); do FB="$FB fragment F$i on T { ...F$((i+1)) ...F$((i+1)) }"; done; FB="$FB fragment F30 on T { x }"
+req POST /graphql "$AH" -H "$GQ" --data "{\"query\":\"$FB\"}"; expect "fragment bomb (complexity) → 403" "$CODE" 403
 req POST /graphql "$AH" -H "$GQ" --data '{"query":"{ a {"}';                           expect "malformed query → 403" "$CODE" 403
 req POST /graphql "$AH" -H 'Content-Type: text/plain' --data 'not graphql';           expect "non-GraphQL content-type → passthrough (200)" "$CODE" 200
 

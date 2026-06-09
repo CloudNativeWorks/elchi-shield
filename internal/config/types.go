@@ -248,6 +248,7 @@ type GraphQLSpec struct {
 	MaxOperations      int      `yaml:"max_operations" json:"max_operations"`
 	BlockIntrospection bool     `yaml:"block_introspection" json:"block_introspection"`
 	MaxFragmentDepth   int      `yaml:"max_fragment_depth" json:"max_fragment_depth"`
+	MaxComplexity      int      `yaml:"max_complexity" json:"max_complexity"`
 }
 
 // JWKSSpec configures the header-phase JWKS JWT engine. Keys come from a local
