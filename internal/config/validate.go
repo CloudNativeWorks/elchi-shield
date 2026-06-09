@@ -367,6 +367,42 @@ func validateBot(b *BotSpec, add func(field string, err error)) {
 	if !hasLayer {
 		add("engines.bot", errors.New("at least one detection layer (user_agent, verified_bots, tls_fingerprint, or heuristics) is required"))
 	}
+	if ua := b.UserAgent; ua != nil {
+		for i, s := range ua.DenySubstrings {
+			if strings.TrimSpace(s) == "" {
+				add(fmt.Sprintf("engines.bot.user_agent.deny_substrings[%d]", i),
+					errors.New("must not be empty (an empty substring matches every User-Agent and blocks all traffic)"))
+			}
+		}
+		if ua.ScoreKnownBot < 0 {
+			add("engines.bot.user_agent.score_known_bot", errors.New("must be >= 0"))
+		}
+	}
+	if t := b.TLSFingerprint; t != nil {
+		for field, list := range map[string][]string{"deny_ja4": t.DenyJA4, "deny_ja3": t.DenyJA3, "tool_ja4": t.ToolJA4} {
+			for i, h := range list {
+				if strings.TrimSpace(h) == "" {
+					add(fmt.Sprintf("engines.bot.tls_fingerprint.%s[%d]", field, i), errors.New("must not be empty"))
+				}
+			}
+		}
+		for h, s := range t.ScoreJA4 {
+			if s < 0 {
+				add("engines.bot.tls_fingerprint.score_ja4", fmt.Errorf("score for %q must be >= 0", h))
+			}
+		}
+	}
+	if h := b.Heuristics; h != nil && h.ScorePerAnomaly < 0 {
+		add("engines.bot.heuristics.score_per_anomaly", errors.New("must be >= 0"))
+	}
+	// A score layer with no threshold (and not emitting to the anomaly scorer) is
+	// a silent no-op — the accumulated score can never block.
+	hasScoreLayer := (b.UserAgent != nil && b.UserAgent.ScoreKnownBot > 0) ||
+		(b.TLSFingerprint != nil && len(b.TLSFingerprint.ScoreJA4) > 0) ||
+		(b.Heuristics != nil && b.Heuristics.ScorePerAnomaly > 0)
+	if hasScoreLayer && b.ScoreThreshold <= 0 && !b.EmitScore {
+		add("engines.bot.score_threshold", errors.New("must be > 0 when score layers are configured (or set emit_score to feed the policy anomaly scorer)"))
+	}
 	for i, vb := range b.VerifiedBots {
 		p := fmt.Sprintf("engines.bot.verified_bots[%d]", i)
 		if vb.Name == "" {

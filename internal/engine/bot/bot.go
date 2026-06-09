@@ -129,7 +129,7 @@ func New(cfg Config) (*Engine, error) {
 		denyJA4:       toSet(cfg.TLS.DenyJA4),
 		denyJA3:       toSet(cfg.TLS.DenyJA3),
 		toolJA4:       toSet(cfg.TLS.ToolJA4),
-		scoreJA4:      cfg.TLS.ScoreJA4,
+		scoreJA4:      lowerKeys(cfg.TLS.ScoreJA4),
 
 		hRequireAccept: cfg.Heuristics.RequireAccept,
 		hRequireAL:     cfg.Heuristics.RequireAcceptLanguage,
@@ -138,11 +138,17 @@ func New(cfg Config) (*Engine, error) {
 		emitScore:      cfg.EmitScore,
 	}
 
-	if len(cfg.UA.DenySubstrings) > 0 {
-		quoted := make([]string, len(cfg.UA.DenySubstrings))
-		for i, s := range cfg.UA.DenySubstrings {
-			quoted[i] = regexp.QuoteMeta(s)
+	// Build the deny regex from non-empty substrings only: an empty substring
+	// would compile to an empty alternative ("(?i)foo|") that matches EVERY
+	// User-Agent, blocking all traffic. (Config validation also rejects it.)
+	quoted := make([]string, 0, len(cfg.UA.DenySubstrings))
+	for _, s := range cfg.UA.DenySubstrings {
+		if s == "" {
+			continue
 		}
+		quoted = append(quoted, regexp.QuoteMeta(s))
+	}
+	if len(quoted) > 0 {
 		re, err := regexp.Compile("(?i)" + strings.Join(quoted, "|"))
 		if err != nil {
 			return nil, fmt.Errorf("bot: deny_substrings: %w", err)
@@ -187,15 +193,29 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	parsed := ua.Parse(uaStr)
 
 	// Layer 1: verified bots (ALLOW short-circuit or impersonation hard-block).
+	// A UA may match more than one crawler regex; the source IP is verified
+	// against EVERY matching entry's feed (allow if it's in ANY), so an
+	// overlapping regex can't dodge a stricter entry. The source IP is unmapped
+	// (IPv4-in-IPv6) before the lookup, consistent with the ip-reputation engine.
+	srcIP, srcErr := netip.ParseAddr(req.SourceIP)
+	if srcErr == nil {
+		srcIP = srcIP.Unmap()
+	}
+	claimed := ""
 	for i := range e.verified {
 		vb := &e.verified[i]
 		if vb.ua.MatchString(uaStr) {
-			if ip, err := netip.ParseAddr(req.SourceIP); err == nil && vb.ips.Contains(ip) {
+			if claimed == "" {
+				claimed = vb.name
+			}
+			if srcErr == nil && vb.ips.Contains(srcIP) {
 				return decision.Verdict{}, nil // verified crawler → allow
 			}
-			return block("bot.impersonation:"+vb.name,
-				"claims "+vb.name+" but source IP is not in its published ranges", decision.SeverityHigh), nil
 		}
+	}
+	if claimed != "" {
+		return block("bot.impersonation:"+claimed,
+			"claims "+claimed+" but source IP is not in its published ranges", decision.SeverityHigh), nil
 	}
 
 	// Layer 2: User-Agent hard blocks.
@@ -206,9 +226,10 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 		return block("bot.ua_deny", "User-Agent matches a denied client", decision.SeverityHigh), nil
 	}
 
-	// Layer 3: TLS fingerprint hard blocks + JA4↔UA consistency.
-	ja4, _ := req.Headers.Header(e.ja4Header)
-	ja3, _ := req.Headers.Header(e.ja3Header)
+	// Layer 3: TLS fingerprint hard blocks + JA4↔UA consistency. Normalize the
+	// Envoy-supplied header (trim + lowercase) to match the normalized config set.
+	ja4 := strings.ToLower(strings.TrimSpace(headerOf(req, e.ja4Header)))
+	ja3 := strings.ToLower(strings.TrimSpace(headerOf(req, e.ja3Header)))
 	if ja4 != "" {
 		if _, ok := e.denyJA4[ja4]; ok {
 			return block("bot.ja4_deny", "TLS fingerprint (JA4) is denied", decision.SeverityHigh), nil
@@ -268,6 +289,11 @@ func hasHeader(req *engine.Request, name string) bool {
 	return ok && v != ""
 }
 
+func headerOf(req *engine.Request, name string) string {
+	v, _ := req.Headers.Header(name)
+	return v
+}
+
 func orDefault(v, def string) string {
 	if v == "" {
 		return def
@@ -275,15 +301,34 @@ func orDefault(v, def string) string {
 	return v
 }
 
+// toSet builds a lookup set of TLS fingerprint hashes, normalized (trim +
+// lowercase) so a case/whitespace difference between the configured hash and the
+// Envoy-supplied header value can't let a known-bad fingerprint slip past.
 func toSet(items []string) map[string]struct{} {
-	if len(items) == 0 {
-		return nil
-	}
 	m := make(map[string]struct{}, len(items))
 	for _, s := range items {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
 		m[s] = struct{}{}
 	}
+	if len(m) == 0 {
+		return nil
+	}
 	return m
+}
+
+// lowerKeys normalizes a fingerprint→score map's keys the same way as toSet.
+func lowerKeys(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[strings.ToLower(strings.TrimSpace(k))] = v
+	}
+	return out
 }
 
 func block(ruleID, reason string, sev decision.Severity) decision.Verdict {

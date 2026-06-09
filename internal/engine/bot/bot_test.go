@@ -224,3 +224,43 @@ func TestEmitScoreMode(t *testing.T) {
 		t.Fatal("hard UA-deny must still block in emit-score mode")
 	}
 }
+
+func TestJA4CaseInsensitive(t *testing.T) {
+	e, err := New(Config{TLS: TLSConfig{DenyJA4: []string{"T13D_KNOWN_BAD"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Envoy sends the hash lowercase; the deny set is normalized, so it matches.
+	if v := inspect(t, e, "1.2.3.4", hdrs{"User-Agent": chromeUA, "x-shield-ja4": "  t13d_known_bad  "}); v.RuleID != "bot.ja4_deny" {
+		t.Fatalf("case/whitespace-different JA4 should still be denied, got %+v", v)
+	}
+}
+
+func TestEmptyDenySubstringSkipped(t *testing.T) {
+	// An empty substring must NOT compile into a match-everything regex.
+	e, err := New(Config{UA: UAConfig{DenySubstrings: []string{"", "sqlmap"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := inspect(t, e, "1.2.3.4", hdrs{"User-Agent": chromeUA}); v.Action == decision.Block {
+		t.Fatal("a normal UA must not be blocked by an empty deny substring")
+	}
+	if v := inspect(t, e, "1.2.3.4", hdrs{"User-Agent": "sqlmap/1.5"}); v.Action != decision.Block {
+		t.Fatal("the real deny substring should still block")
+	}
+}
+
+func TestVerifiedBotUnmapped4in6(t *testing.T) {
+	feedFile := writeFeed(t, "66.249.64.0/19\n")
+	e, err := New(Config{VerifiedBots: []VerifiedBotConfig{{
+		Name: "googlebot", File: feedFile, Format: "cidr_lines", UAMatch: "(?i)googlebot",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gUA := hdrs{"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+	// A 4-in-6 Google IP must verify against the IPv4 feed.
+	if v := inspect(t, e, "::ffff:66.249.64.10", gUA); v.Action == decision.Block {
+		t.Fatal("IPv4-mapped IPv6 Google IP should verify, not be flagged as impersonation")
+	}
+}

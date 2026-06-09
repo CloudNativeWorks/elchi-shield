@@ -317,3 +317,41 @@ spec:
 		t.Fatalf("want block/allow overlap error, got %v", err)
 	}
 }
+
+func TestValidateBotFootguns(t *testing.T) {
+	base := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - host: a.com
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              bot:
+`
+	cases := map[string]struct{ frag, want string }{
+		"empty deny substring": {
+			"                user_agent: { deny_substrings: [\"sqlmap\", \"\"] }\n",
+			"deny_substrings[1]",
+		},
+		"score layer no threshold": {
+			"                heuristics: { require_accept_language: true, score_per_anomaly: 30 }\n",
+			"score_threshold",
+		},
+		"negative ja4 score": {
+			"                score_threshold: 50\n                tls_fingerprint: { score_ja4: { abc: -5 } }\n",
+			"must be >= 0",
+		},
+	}
+	for name, tc := range cases {
+		dir := writeFiles(t, map[string]string{"a.yaml": base + tc.frag})
+		_, err := Load(dir)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, tc.want, err)
+		}
+	}
+}
