@@ -26,6 +26,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -132,8 +133,8 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	if !ok || raw == "" {
 		return block("jwks.missing", "missing JWT in "+e.header), nil
 	}
-	if len(raw) > 7 && (raw[:7] == "Bearer " || raw[:7] == "bearer ") {
-		raw = raw[7:]
+	if len(raw) >= 7 && strings.EqualFold(raw[:7], "Bearer ") {
+		raw = strings.TrimSpace(raw[7:])
 	}
 
 	claims := gojwt.MapClaims{}
@@ -141,16 +142,44 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 		return block("jwks.invalid", "JWT validation failed"), nil
 	}
 	for _, name := range e.cfg.RequiredClaims {
-		if v, ok := claims[name]; !ok || v == nil || v == "" {
-			return block("jwks.missing_claim", "required claim missing: "+name), nil
+		if v, ok := claims[name]; !ok || isEmptyClaim(v) {
+			return block("jwks.missing_claim", "required claim missing or empty: "+name), nil
 		}
 	}
 	return decision.Verdict{}, nil
 }
 
+// isEmptyClaim reports whether a claim value is empty for the required-claims
+// check: nil, an empty string, or an empty array/object (a meaningful 0/false is
+// not empty). Mirrors the jwt engine.
+func isEmptyClaim(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
+	default:
+		return false
+	}
+}
+
 // keyFunc resolves the verification key for the token's kid from the current key
 // set. An unknown kid is an error (block) — never a network fetch.
 func (e *Engine) keyFunc(t *gojwt.Token) (any, error) {
+	// JWKS keys are ALWAYS asymmetric. Refuse alg:none and any HMAC method so a
+	// forged HS256 token can never be verified with an RSA/EC public key as the
+	// HMAC secret (the classic RS256→HS256 confusion). Defense in depth on top of
+	// WithValidMethods (which config also restricts to asymmetric algs).
+	if t.Method == gojwt.SigningMethodNone {
+		return nil, errors.New("alg:none is not allowed")
+	}
+	if _, isHMAC := t.Method.(*gojwt.SigningMethodHMAC); isHMAC {
+		return nil, errors.New("HMAC algorithms are not allowed with a JWKS (asymmetric keys only)")
+	}
 	kid, _ := t.Header["kid"].(string)
 	keys := *e.keys.Load()
 	if k, ok := keys[kid]; ok {
@@ -262,6 +291,15 @@ func parseJWKS(data []byte) (map[string]crypto.PublicKey, error) {
 		return nil, fmt.Errorf("jwks: parse: %w", err)
 	}
 	out := make(map[string]crypto.PublicKey, len(set.Keys))
+	add := func(kid string, pub crypto.PublicKey) error {
+		// A duplicate kid would silently overwrite an earlier key (a corrupt or
+		// hostile JWKS could swap which key verifies a kid) — reject it.
+		if _, dup := out[kid]; dup {
+			return fmt.Errorf("jwks: duplicate kid %q", kid)
+		}
+		out[kid] = pub
+		return nil
+	}
 	for i := range set.Keys {
 		k := &set.Keys[i]
 		switch k.Kty {
@@ -270,13 +308,17 @@ func parseJWKS(data []byte) (map[string]crypto.PublicKey, error) {
 			if err != nil {
 				return nil, err
 			}
-			out[k.Kid] = pub
+			if err := add(k.Kid, pub); err != nil {
+				return nil, err
+			}
 		case "EC":
 			pub, err := ecFromJWK(k)
 			if err != nil {
 				return nil, err
 			}
-			out[k.Kid] = pub
+			if err := add(k.Kid, pub); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if len(out) == 0 {
@@ -285,22 +327,44 @@ func parseJWKS(data []byte) (map[string]crypto.PublicKey, error) {
 	return out, nil
 }
 
+// minRSABits is the smallest RSA modulus accepted (RFC 7518 §3.3 / NIST).
+const minRSABits = 2048
+
 func rsaFromJWK(k *jwkKey) (*rsa.PublicKey, error) {
+	if k.N == "" || k.E == "" {
+		return nil, errors.New("jwks: RSA key missing required n/e")
+	}
 	n, err := b64uBig(k.N)
 	if err != nil {
 		return nil, fmt.Errorf("jwks: RSA n: %w", err)
+	}
+	if n.Sign() <= 0 {
+		return nil, errors.New("jwks: RSA modulus must be positive")
+	}
+	if n.BitLen() < minRSABits {
+		return nil, fmt.Errorf("jwks: RSA modulus too small (%d bits, minimum %d)", n.BitLen(), minRSABits)
 	}
 	eb, err := base64.RawURLEncoding.DecodeString(k.E)
 	if err != nil {
 		return nil, fmt.Errorf("jwks: RSA e: %w", err)
 	}
+	if len(eb) == 0 || len(eb) > 8 {
+		return nil, fmt.Errorf("jwks: RSA exponent length %d invalid (want 1..8 bytes)", len(eb))
+	}
 	// Big-endian exponent, left-padded to 8 bytes.
 	var buf [8]byte
 	copy(buf[8-len(eb):], eb)
-	return &rsa.PublicKey{N: n, E: int(binary.BigEndian.Uint64(buf[:]))}, nil
+	e := int(binary.BigEndian.Uint64(buf[:]))
+	if e < 2 {
+		return nil, fmt.Errorf("jwks: RSA exponent %d invalid", e)
+	}
+	return &rsa.PublicKey{N: n, E: e}, nil
 }
 
 func ecFromJWK(k *jwkKey) (*ecdsa.PublicKey, error) {
+	if k.X == "" || k.Y == "" {
+		return nil, errors.New("jwks: EC key missing required x/y")
+	}
 	var curve elliptic.Curve
 	switch k.Crv {
 	case "P-256":
@@ -320,7 +384,13 @@ func ecFromJWK(k *jwkKey) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jwks: EC y: %w", err)
 	}
-	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+	pub := &ecdsa.PublicKey{Curve: curve, X: x, Y: y}
+	// Reject an off-curve point: ECDH() re-derives the point through crypto/ecdh,
+	// which validates curve membership (avoids the deprecated IsOnCurve).
+	if _, err := pub.ECDH(); err != nil {
+		return nil, fmt.Errorf("jwks: EC point not on curve %q: %w", k.Crv, err)
+	}
+	return pub, nil
 }
 
 func b64uBig(s string) (*big.Int, error) {

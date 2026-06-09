@@ -234,3 +234,58 @@ func TestMetadata(t *testing.T) {
 		t.Error("jwks should be a header-phase engine named jwks")
 	}
 }
+
+func TestParseRejectsWeakRSA(t *testing.T) {
+	weak, _ := rsa.GenerateKey(rand.Reader, 1024)
+	if _, err := parseJWKS(rsaJWKS(t, &weak.PublicKey, "w")); err == nil {
+		t.Fatal("a 1024-bit RSA key must be rejected (min 2048)")
+	}
+}
+
+func TestParseRejectsMissingFields(t *testing.T) {
+	if _, err := parseJWKS([]byte(`{"keys":[{"kty":"RSA","kid":"x","e":"AQAB"}]}`)); err == nil {
+		t.Fatal("RSA key missing n must be rejected")
+	}
+	if _, err := parseJWKS([]byte(`{"keys":[{"kty":"EC","kid":"x","crv":"P-256","x":""}]}`)); err == nil {
+		t.Fatal("EC key missing x/y must be rejected")
+	}
+}
+
+func TestParseRejectsDuplicateKid(t *testing.T) {
+	k1, _ := rsa.GenerateKey(rand.Reader, 2048)
+	k2, _ := rsa.GenerateKey(rand.Reader, 2048)
+	// Two keys, same kid.
+	merged := `{"keys":[` +
+		string(rsaJWKS(t, &k1.PublicKey, "dup"))[len(`{"keys":[`):len(string(rsaJWKS(t, &k1.PublicKey, "dup")))-2] + `,` +
+		string(rsaJWKS(t, &k2.PublicKey, "dup"))[len(`{"keys":[`):]
+	if _, err := parseJWKS([]byte(merged)); err == nil {
+		t.Fatal("a duplicate kid must be rejected")
+	}
+}
+
+func TestParseRejectsOffCurveEC(t *testing.T) {
+	// Valid-length but off-curve coordinates.
+	bad := `{"keys":[{"kty":"EC","kid":"e","crv":"P-256","x":"` +
+		b64u(make([]byte, 32)) + `","y":"` + b64u(make([]byte, 32)) + `"}]}`
+	if _, err := parseJWKS([]byte(bad)); err == nil {
+		t.Fatal("an off-curve EC point must be rejected")
+	}
+}
+
+func TestKeyFuncRejectsHMACToken(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	fp := filepath.Join(t.TempDir(), "jwks.json")
+	_ = os.WriteFile(fp, rsaJWKS(t, &key.PublicKey, "k1"), 0o600)
+	// Engine pinned to RS256; an HS256 token must never verify against the RSA key.
+	e, err := New(Config{File: fp, Algorithms: []string{"RS256"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close() //nolint:errcheck
+	tok := gojwt.NewWithClaims(gojwt.SigningMethodHS256, gojwt.MapClaims{"sub": "u", "exp": time.Now().Add(time.Hour).Unix()})
+	tok.Header["kid"] = "k1"
+	s, _ := tok.SignedString([]byte("attacker-secret"))
+	if v := inspect(t, e, auth(s)); v.Action != decision.Block {
+		t.Fatal("an HS256 token must be blocked by an RS256 JWKS engine")
+	}
+}

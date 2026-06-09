@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -274,12 +275,7 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 			}
 		}
 		if j := s.Engines.JWKS; j != nil {
-			if (j.File == "") == (j.URL == "") {
-				add("engines.jwks", errors.New("exactly one of file or url is required"))
-			}
-			if len(j.Algorithms) == 0 {
-				add("engines.jwks.algorithms", errors.New("at least one algorithm is required"))
-			}
+			validateJWKS(j, add)
 		}
 		if x := s.Engines.XFCC; x != nil {
 			if !x.RequirePresent && len(x.URIs)+len(x.DNSNames)+len(x.Subjects)+len(x.Hashes) == 0 {
@@ -322,6 +318,55 @@ func validateDLP(d *DLPSpec, add func(field string, err error)) {
 			add("checks.body.dlp", fmt.Errorf("unknown DLP kind %q", k))
 		}
 	}
+}
+
+// validateJWKS checks the JWKS engine config: exactly one source, asymmetric
+// algorithms only (a JWKS holds asymmetric keys — an HS* alg would invite an
+// RS256→HS256 confusion attack), an HTTPS (or loopback) URL, and sane durations.
+func validateJWKS(j *JWKSSpec, add func(field string, err error)) {
+	if (j.File == "") == (j.URL == "") {
+		add("engines.jwks", errors.New("exactly one of file or url is required"))
+	}
+	if len(j.Algorithms) == 0 {
+		add("engines.jwks.algorithms", errors.New("at least one algorithm is required"))
+	}
+	for i, alg := range j.Algorithms {
+		if _, ok := knownJWTAlgs[alg]; !ok {
+			add(fmt.Sprintf("engines.jwks.algorithms[%d]", i), fmt.Errorf("unsupported or unsafe algorithm %q", alg))
+		} else if strings.HasPrefix(alg, "HS") {
+			add(fmt.Sprintf("engines.jwks.algorithms[%d]", i), fmt.Errorf("symmetric algorithm %q is not allowed with a JWKS (asymmetric keys only — RS*/ES*/PS*/EdDSA)", alg))
+		}
+	}
+	if j.URL != "" {
+		if u, err := url.Parse(j.URL); err != nil {
+			add("engines.jwks.url", fmt.Errorf("invalid URL: %w", err))
+		} else if u.Scheme != "https" && !isLoopbackHost(u.Hostname()) {
+			add("engines.jwks.url", fmt.Errorf("must use https (an http JWKS URL is MITM-able → an attacker can swap the keys); got scheme %q", u.Scheme))
+		}
+	}
+	if l := j.Leeway.AsDuration(); l < 0 {
+		add("engines.jwks.leeway", errors.New("must be >= 0"))
+	} else if l > 5*time.Minute {
+		add("engines.jwks.leeway", fmt.Errorf("must be <= 5m (a large leeway accepts long-expired tokens), got %s", l))
+	}
+	if j.RefreshInterval.AsDuration() < 0 {
+		add("engines.jwks.refresh_interval", errors.New("must be >= 0"))
+	}
+	if j.HTTPTimeout.AsDuration() < 0 {
+		add("engines.jwks.http_timeout", errors.New("must be >= 0"))
+	}
+}
+
+// isLoopbackHost reports whether host is localhost or a loopback IP (so a local
+// IdP over plain http is allowed; remote http is not).
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // validateAPIKey checks the API-key engine config.

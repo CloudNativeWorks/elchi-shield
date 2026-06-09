@@ -393,3 +393,46 @@ spec:
 		}
 	}
 }
+
+func TestValidateJWKSFootguns(t *testing.T) {
+	base := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - host: a.com
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              jwks:
+`
+	cases := map[string]struct{ frag, want string }{
+		"HS alg with JWKS": {
+			"                file: /tmp/j.json\n                algorithms: [HS256]\n",
+			"asymmetric keys only",
+		},
+		"http url (MITM-able)": {
+			"                url: http://idp.example.com/jwks\n                algorithms: [RS256]\n",
+			"must use https",
+		},
+		"leeway too large": {
+			"                file: /tmp/j.json\n                algorithms: [RS256]\n                leeway: 1h\n",
+			"must be <= 5m",
+		},
+	}
+	for name, tc := range cases {
+		dir := writeFiles(t, map[string]string{"a.yaml": base + tc.frag})
+		_, err := Load(dir)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, tc.want, err)
+		}
+	}
+	// A loopback http URL is allowed (local IdP).
+	ok := base + "                url: http://127.0.0.1:8443/jwks\n                algorithms: [RS256]\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": ok})); err != nil {
+		t.Errorf("loopback http JWKS URL should be allowed, got %v", err)
+	}
+}
