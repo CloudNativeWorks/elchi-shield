@@ -269,10 +269,20 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	reloader.OnRetire(func(old *runtime.Snapshot) {
 		select {
 		case retireCh <- retireItem{snap: old, at: time.Now()}:
-		default: // queue full (flapping) → close now to bound memory
-			if err := old.Close(); err != nil {
-				runtimeLog.Warn("retired snapshot close failed", logging.Err(err))
-			}
+		default:
+			// Queue full (rapid flapping). Closing now is unsafe: a slow in-flight
+			// request may still have this snapshot pinned (tx.Snapshot), and Close
+			// frees its engines (Coraza rulesets, JWKS refreshers) → a use-after-free
+			// race in a third-party engine. Honor the grace in a one-off goroutine
+			// instead. Overflow is rare (more than the queue depth of reloads within
+			// the grace window), and config comes from the trusted management plane,
+			// so correctness here outweighs the strict no-extra-goroutine bound.
+			go func(s *runtime.Snapshot) {
+				time.Sleep(snapshotRetireGrace)
+				if err := s.Close(); err != nil {
+					runtimeLog.Warn("retired snapshot close failed", logging.Err(err))
+				}
+			}(old)
 		}
 	})
 	doReload(reloader, configLog, m)
