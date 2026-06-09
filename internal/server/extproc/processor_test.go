@@ -14,6 +14,7 @@ import (
 	procmodev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/audit"
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
@@ -169,6 +170,18 @@ func isImmediate(r *extprocv3.ProcessingResponse) bool {
 	return ok
 }
 
+func TestListenerIDFromAttributes(t *testing.T) {
+	st, _ := structpb.NewStruct(map[string]any{"xds.node.id": "node-7"})
+	req := &extprocv3.ProcessingRequest{Attributes: map[string]*structpb.Struct{"envoy.filters.http.ext_proc": st}}
+	if got := listenerIDFromAttributes(req); got != "node-7" {
+		t.Fatalf("first attribute value should be the listener id, got %q", got)
+	}
+	// No attributes → empty (falls back to the configured listener id downstream).
+	if got := listenerIDFromAttributes(&extprocv3.ProcessingRequest{}); got != "" {
+		t.Fatalf("no attributes should yield empty, got %q", got)
+	}
+}
+
 // requestsBody reports whether the response asks Envoy to buffer the request body.
 func requestsBody(r *extprocv3.ProcessingResponse) bool {
 	return r.GetModeOverride().GetRequestBodyMode() == procmodev3.ProcessingMode_BUFFERED
@@ -247,7 +260,7 @@ func procWithPolicy(t *testing.T, match config.Match, spec config.PolicySpec) *P
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Hosts: []string{"api.example.com"},
+			Hosts:  []string{"api.example.com"},
 			Routes: []config.Route{{Match: match, Policy: spec}},
 		}}},
 	}
@@ -269,7 +282,7 @@ func procWithAuditor(t *testing.T, match config.Match, spec config.PolicySpec, a
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Hosts: []string{"api.example.com"},
+			Hosts:  []string{"api.example.com"},
 			Routes: []config.Route{{Match: match, Policy: spec}},
 		}}},
 	}
@@ -486,7 +499,7 @@ func TestProcessorHeaderOnlyPolicyTrailersNoDoubleFinish(t *testing.T) {
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Hosts: []string{"api.example.com"},
+			Hosts:  []string{"api.example.com"},
 			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{Mode: ptr(block)}}},
 		}}},
 	}

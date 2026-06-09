@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +24,15 @@ const namespace = "elchi_shield"
 type Metrics struct {
 	reg      *prometheus.Registry
 	instance string
+
+	// listenerCache memoizes the per-listener cursor by its label value (the Envoy
+	// node id from ext_proc attributes, or the configured listener id) so a new
+	// value is curried once on first sight (a brief sync.Map write) and every
+	// subsequent record is a lock-free read. listenerCount caps distinct values as
+	// a backstop against unbounded cardinality (node ids come from a trusted Envoy
+	// bootstrap, so this only guards misconfiguration).
+	listenerCache sync.Map // string -> *ListenerMetrics
+	listenerCount atomic.Int64
 
 	// Global (no listener dimension).
 	reloadOK         prometheus.Counter
@@ -235,11 +246,36 @@ func (m *Metrics) RegisterStages(names []string) {
 	}
 }
 
-// ForListener returns the per-listener request-metric cursor (curried once).
+// maxListenerSeries caps distinct listener label values (Envoy node ids). A
+// trusted Envoy yields few; this is a backstop against a misconfigured attribute
+// producing unbounded cardinality. Beyond the cap, values fold into "overflow".
+const maxListenerSeries = 4096
+
+const overflowListener = "overflow"
+
+// ForListener returns the per-listener request-metric cursor for a label value
+// (an Envoy node id or the configured listener id), memoized so each value is
+// curried once and every subsequent lookup is a lock-free read.
 func (m *Metrics) ForListener(id string) *ListenerMetrics {
 	if m == nil {
 		return nil
 	}
+	if v, ok := m.listenerCache.Load(id); ok {
+		return v.(*ListenerMetrics)
+	}
+	if m.listenerCount.Load() >= maxListenerSeries && id != overflowListener {
+		return m.ForListener(overflowListener)
+	}
+	lm := m.buildListenerMetrics(id)
+	actual, loaded := m.listenerCache.LoadOrStore(id, lm)
+	if !loaded {
+		m.listenerCount.Add(1)
+	}
+	return actual.(*ListenerMetrics)
+}
+
+// buildListenerMetrics curries every per-listener series with the label value.
+func (m *Metrics) buildListenerMetrics(id string) *ListenerMetrics {
 	lm := &ListenerMetrics{
 		requests:          m.requests.WithLabelValues(id),
 		allowed:           m.allowed.WithLabelValues(id),

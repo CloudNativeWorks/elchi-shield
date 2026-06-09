@@ -55,6 +55,10 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
                       failure_mode_allow: true        # if elchi-shield is unreachable, fail open
+                      # The FIRST request_attribute is used by shield as the per-listener
+                      # metric label (the `listener` label). Put your identifier first —
+                      # e.g. the Envoy node id from the bootstrap `node: { id: ... }`.
+                      request_attributes: ["xds.node.id"]
                       grpc_service:
                         envoy_grpc: { cluster_name: elchi_shield }
                         timeout: 0.2s

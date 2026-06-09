@@ -1,5 +1,9 @@
 # Envoy config for the e2e harness: a real Envoy proxying HTTP through the
 # ext_proc filter to elchi-shield, then to a local echo upstream.
+node:
+  id: e2e-envoy-node       # sent to shield via ext_proc request_attributes (xds.node.id)
+  cluster: e2e
+
 admin:
   address:
     socket_address: { address: 127.0.0.1, port_value: 9901 }
@@ -60,6 +64,7 @@ static_resources:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
                       failure_mode_allow: false
                       allow_mode_override: true
+                      request_attributes: ["xds.node.id"]   # shield labels metrics by this
                       grpc_service:
                         envoy_grpc: { cluster_name: elchi_shield }
                         timeout: 1s

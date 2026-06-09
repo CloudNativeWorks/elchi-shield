@@ -152,10 +152,37 @@ func (pr *Processor) Process(stream extprocv3.ExternalProcessor_ProcessServer) (
 	}
 }
 
+// lmFor returns the metric cursor for this stream's listener label: the Envoy
+// node id (from ext_proc attributes) when present, else the processor's
+// configured listener id. Resolved by a lock-free cache lookup.
+func (pr *Processor) lmFor(tx *pipeline.Transaction) *metrics.ListenerMetrics {
+	if tx.NodeID != "" {
+		return pr.metrics.ForListener(tx.NodeID)
+	}
+	return pr.lm
+}
+
+// listenerIDFromAttributes returns the first attribute value Envoy sends via the
+// ext_proc filter's `request_attributes` — by convention the listener/node id
+// (the operator lists it first, e.g. `request_attributes: ["xds.node.id"]`).
+// Name-agnostic: any string attribute works, so the identifier is whatever the
+// operator chooses. Returns "" when no attributes are sent.
+func listenerIDFromAttributes(req *extprocv3.ProcessingRequest) string {
+	for _, st := range req.GetAttributes() {
+		for _, v := range st.GetFields() {
+			if s := v.GetStringValue(); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
 // handle dispatches one ProcessingRequest to the right phase handler.
 func (pr *Processor) handle(ctx context.Context, tx *pipeline.Transaction, req *extprocv3.ProcessingRequest) *extprocv3.ProcessingResponse {
 	switch v := req.Request.(type) {
 	case *extprocv3.ProcessingRequest_RequestHeaders:
+		tx.NodeID = listenerIDFromAttributes(req) // first request_attribute → listener id for metrics
 		return pr.onRequestHeaders(ctx, tx, v.RequestHeaders)
 	case *extprocv3.ProcessingRequest_RequestBody:
 		return pr.onRequestBody(ctx, tx, v.RequestBody)
@@ -279,12 +306,12 @@ func (pr *Processor) appendBody(tx *pipeline.Transaction, dir pipeline.Direction
 		}
 		if truncated {
 			tx.SetBodyTruncated(true)
-			pr.lm.RecordBodyBudgetReject("per_request_cap")
+			pr.lmFor(tx).RecordBodyBudgetReject("per_request_cap")
 		}
 	}
 	if grant < int64(len(chunk)) { // global budget exhausted → treat as over-limit
 		tx.SetBodyTruncated(true)
-		pr.lm.RecordBodyBudgetReject("inflight_budget")
+		pr.lmFor(tx).RecordBodyBudgetReject("inflight_budget")
 	}
 }
 
@@ -301,7 +328,7 @@ func (pr *Processor) onRequestBody(ctx context.Context, tx *pipeline.Transaction
 		return immediateResponse(bd)
 	}
 	if tx.BodyMutated() { // DLP redaction rewrote the request body for forwarding
-		pr.lm.RecordBodyMutation()
+		pr.lmFor(tx).RecordBodyMutation()
 		return requestBodyMutation(tx.Body())
 	}
 	return requestBodyContinue()
@@ -360,7 +387,7 @@ func (pr *Processor) onResponseBody(ctx context.Context, tx *pipeline.Transactio
 		return immediateResponse(bd)
 	}
 	if tx.BodyMutated() { // DLP redaction rewrote the body for forwarding
-		pr.lm.RecordBodyMutation()
+		pr.lmFor(tx).RecordBodyMutation()
 		return responseBodyMutation(tx.Body())
 	}
 	return responseBodyContinue()
@@ -483,9 +510,9 @@ func continueFor(dir pipeline.Direction, phase string) *extprocv3.ProcessingResp
 func (pr *Processor) finish(ctx context.Context, tx *pipeline.Transaction, d *decision.Decision, phase string, start time.Time) {
 	latency := time.Since(start)
 	pr.logDecision(ctx, tx, d, phase, latency)
-	pr.lm.RecordDecision(d, phase, latency)
+	pr.lmFor(tx).RecordDecision(d, phase, latency)
 	if tx.BodyRequired() {
-		pr.lm.RecordBodyBytes(len(tx.Body()))
+		pr.lmFor(tx).RecordBodyBytes(len(tx.Body()))
 	}
 	pr.emitAudit(ctx, tx, d, phase)
 }

@@ -60,6 +60,9 @@ type Transaction struct {
 
 	// Extracted request attributes (filled by the context-init stage).
 	ListenerID  string
+	// NodeID is the Envoy node id from ext_proc request_attributes (xds.node.id),
+	// used as the per-listener metric label when present. Empty when not sent.
+	NodeID      string
 	Host        string
 	Path        string
 	Method      string
@@ -310,6 +313,7 @@ func (tx *Transaction) Reset() {
 	tx.Direction = DirectionRequest
 	tx.Snapshot = nil
 	tx.ListenerID = ""
+	tx.NodeID = ""
 	tx.Host = ""
 	tx.Path = ""
 	tx.Method = ""

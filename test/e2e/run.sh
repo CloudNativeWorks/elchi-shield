@@ -359,6 +359,8 @@ PZ=$(curl -s "http://${HTTP}/policyz?host=api.example.com&path=/block-hdr&method
 case "$PZ" in *'"matched": true'*) P "/policyz resolves a policy";; *) F "/policyz no match";; esac
 MX=$(curl -s "http://${HTTP}/metrics")
 case "$MX" in *elchi_shield_build_info*) P "/metrics has build_info";; *) F "/metrics missing build_info";; esac
+# Metrics are labeled by the Envoy node id (xds.node.id via ext_proc attributes).
+case "$MX" in *'listener="e2e-envoy-node"'*) P "/metrics labeled by Envoy node id (xds.node.id)";; *) F "/metrics missing Envoy node id label";; esac
 case "$MX" in *go_goroutines*) P "/metrics has go_goroutines";; *) F "/metrics missing go_goroutines";; esac
 # findings_total attributes blocks/detections to the engine that produced them.
 case "$MX" in *'findings_total{action="block",engine="coraza"'*) P "/metrics findings_total has per-engine labels (coraza block)";; *) F "/metrics findings_total missing engine attribution";; esac
