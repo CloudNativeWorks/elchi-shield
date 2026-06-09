@@ -76,7 +76,7 @@ func (bodyTruncationGuard) Process(_ context.Context, tx *pipeline.Transaction) 
 		return pipeline.Continue()
 	}
 	if tx.BodyTruncated() {
-		return deny(tx, "body.too_large", "body exceeded maximum size (truncated; not fully inspected)", decision.SeverityMedium)
+		return denyEngine(tx, engineBodySize, "body.too_large", "body exceeded maximum size (truncated; not fully inspected)", decision.SeverityMedium)
 	}
 	return pipeline.Continue()
 }
@@ -125,7 +125,7 @@ func (b *bodyChecks) Process(ctx context.Context, tx *pipeline.Transaction) pipe
 
 	if c.DetectSensitiveData && b.detector != nil && !p.SkipsCheck(CheckSensitiveData) {
 		if found, kind := b.detector.Scan(ctx, tx.ContentType, body); found {
-			return deny(tx, "body.sensitive_data", "sensitive data detected: "+kind, decision.SeverityHigh)
+			return denyEngine(tx, engineDLP, "body.sensitive_data", "sensitive data detected: "+kind, decision.SeverityHigh)
 		}
 	}
 
@@ -158,7 +158,7 @@ func (b *bodyChecks) runDLP(tx *pipeline.Transaction, dlp *policy.CompiledDLP, b
 	// Block takes precedence over redaction (fail closed on a hard secret).
 	for _, m := range matches {
 		if _, ok := dlp.Block[m.Kind]; ok {
-			return deny(tx, "body.dlp_block:"+m.Kind, "blocked sensitive data: "+m.Kind, decision.SeverityHigh), true
+			return denyEngine(tx, engineDLP, "body.dlp_block:"+m.Kind, "blocked sensitive data: "+m.Kind, decision.SeverityHigh), true
 		}
 	}
 	redacted, changed := redactBody(body, matches, dlp.Redact)

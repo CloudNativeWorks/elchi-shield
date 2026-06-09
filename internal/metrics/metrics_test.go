@@ -37,10 +37,11 @@ func gather(t *testing.T, m *Metrics, name string) float64 {
 func TestRecordDecisionCounters(t *testing.T) {
 	m := New("")
 	lm := m.ForListener("lst-1")
+	// All four are request-direction phases, so the per-transaction tally counts each.
 	lm.RecordDecision(&decision.Decision{Action: decision.Block}, "request_headers", time.Millisecond)
 	lm.RecordDecision(&decision.Decision{Action: decision.Allow}, "request_body", time.Millisecond)
-	lm.RecordDecision(&decision.Decision{Action: decision.Shadow}, "response_headers", time.Millisecond)
-	lm.RecordDecision(&decision.Decision{Action: decision.Detect}, "unknown_phase", time.Millisecond)
+	lm.RecordDecision(&decision.Decision{Action: decision.Shadow}, "request_headers", time.Millisecond)
+	lm.RecordDecision(&decision.Decision{Action: decision.Detect}, "request_body", time.Millisecond)
 
 	if got := gather(t, m, "requests_total"); got != 4 {
 		t.Errorf("requests_total = %v, want 4", got)
@@ -57,6 +58,44 @@ func TestRecordDecisionCounters(t *testing.T) {
 	// allow + shadow + detect all count as allowed.
 	if got := gather(t, m, "requests_allowed_total"); got != 3 {
 		t.Errorf("allowed = %v, want 3", got)
+	}
+}
+
+func TestRecordBodyMutationAndBudget(t *testing.T) {
+	m := New("")
+	lm := m.ForListener("lst-1")
+	lm.RecordBodyMutation()
+	lm.RecordBodyMutation()
+	lm.RecordBodyBudgetReject("per_request_cap")
+	lm.RecordBodyBudgetReject("inflight_budget")
+	lm.RecordBodyBudgetReject("bogus") // unknown reason ignored
+	if got := gather(t, m, "body_mutations_total"); got != 2 {
+		t.Errorf("body_mutations_total = %v, want 2", got)
+	}
+	if got := gather(t, m, "body_budget_rejections_total"); got != 2 {
+		t.Errorf("body_budget_rejections_total = %v, want 2 (bogus reason ignored)", got)
+	}
+}
+
+func TestRecordDecisionNoResponseDoubleCount(t *testing.T) {
+	m := New("")
+	lm := m.ForListener("lst-1")
+	// A request allowed on the request side, then its response also inspected:
+	// one HTTP transaction must count as ONE request and ONE allow, not two.
+	lm.RecordDecision(&decision.Decision{Action: decision.Allow}, "request_headers", time.Millisecond)
+	lm.RecordDecision(&decision.Decision{Action: decision.Allow}, "response_headers", time.Millisecond)
+	if got := gather(t, m, "requests_total"); got != 1 {
+		t.Errorf("requests_total = %v, want 1 (no response double-count)", got)
+	}
+	if got := gather(t, m, "requests_allowed_total"); got != 1 {
+		t.Errorf("allowed = %v, want 1", got)
+	}
+	// But a response-side block is still counted as an enforcement action.
+	lm2 := m.ForListener("lst-2")
+	lm2.RecordDecision(&decision.Decision{Action: decision.Allow}, "request_headers", time.Millisecond)
+	lm2.RecordDecision(&decision.Decision{Action: decision.Block, Engine: "dlp"}, "response_body", time.Millisecond)
+	if got := gather(t, m, "requests_blocked_total"); got != 1 {
+		t.Errorf("blocked = %v, want 1 (response block counts)", got)
 	}
 }
 

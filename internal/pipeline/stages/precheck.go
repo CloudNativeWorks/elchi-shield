@@ -29,7 +29,12 @@ const (
 	CheckSensitiveData    = "sensitive_data"
 )
 
-const builtinEngine = "builtin"
+const (
+	builtinEngine    = "builtin"
+	engineDLP        = "dlp"         // sensitive-data detection / DLP block
+	engineBodySize   = "body_size"   // truncation guard (over-limit body)
+	engineBodyDecode = "body_decode" // undecodable / decode-budget block
+)
 
 // contextInit derives request attributes (host, path, method, content-type) from
 // the (pseudo-)headers if the transport layer did not already set them. It is
@@ -298,12 +303,19 @@ func (e *earlyDecision) Process(_ context.Context, tx *pipeline.Transaction) pip
 // deny builds a block decision attributed to the built-in checks and returns a
 // Deny result.
 func deny(tx *pipeline.Transaction, ruleID, reason string, sev decision.Severity) pipeline.StageResult {
+	return denyEngine(tx, builtinEngine, ruleID, reason, sev)
+}
+
+// denyEngine is deny with an explicit engine/source label, so structural body
+// checks (DLP, truncation, decode) are attributed to their own findings_total
+// bucket instead of collapsing into "builtin".
+func denyEngine(tx *pipeline.Transaction, engine, ruleID, reason string, sev decision.Severity) pipeline.StageResult {
 	d := decision.Decision{
 		Action:     decision.Block,
 		Reason:     reason,
 		RuleID:     ruleID,
 		PolicyID:   tx.PolicyID(),
-		Engine:     builtinEngine,
+		Engine:     engine,
 		Severity:   sev,
 		StatusCode: decision.DefaultBlockStatus,
 	}

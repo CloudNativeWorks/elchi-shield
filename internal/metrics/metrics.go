@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -35,14 +36,16 @@ type Metrics struct {
 	activeVersion *prometheus.GaugeVec
 
 	// Request-level, labeled by listener.
-	requests  *prometheus.CounterVec
-	allowed   *prometheus.CounterVec
-	blocked   *prometheus.CounterVec
-	detect    *prometheus.CounterVec
-	shadow    *prometheus.CounterVec
-	bodyBytes *prometheus.CounterVec
-	findings  *prometheus.CounterVec // by (engine, action) — which engine blocked/detected
-	latency   *prometheus.HistogramVec
+	requests         *prometheus.CounterVec
+	allowed          *prometheus.CounterVec
+	blocked          *prometheus.CounterVec
+	detect           *prometheus.CounterVec
+	shadow           *prometheus.CounterVec
+	bodyBytes        *prometheus.CounterVec
+	findings         *prometheus.CounterVec // by (engine, action) — which engine blocked/detected
+	bodyMutations    *prometheus.CounterVec // DLP redactions (mutated bodies)
+	bodyBudgetReject *prometheus.CounterVec // by reason — intake truncations from a memory bound
+	latency          *prometheus.HistogramVec
 
 	// Stage metrics, registered once (RegisterStages) → lock-free reads.
 	stageLatency *prometheus.HistogramVec
@@ -59,12 +62,14 @@ type stageMetric struct {
 // is already curried with the listener label, so recording is a lock-free atomic
 // increment. The Processor resolves one of these once at construction.
 type ListenerMetrics struct {
-	requests  prometheus.Counter
-	allowed   prometheus.Counter
-	blocked   prometheus.Counter
-	detect    prometheus.Counter
-	shadow    prometheus.Counter
-	bodyBytes prometheus.Counter
+	requests          prometheus.Counter
+	allowed           prometheus.Counter
+	blocked           prometheus.Counter
+	detect            prometheus.Counter
+	shadow            prometheus.Counter
+	bodyBytes         prometheus.Counter
+	bodyMutations     prometheus.Counter
+	budgetRejByReason map[string]prometheus.Counter // pre-curried per reason
 	// latencyByPhase holds the per-phase latency observers, pre-curried at
 	// construction (ForListener) so recording is a lock-free, alloc-free map read
 	// + Observe — never a per-request WithLabelValues.
@@ -86,11 +91,19 @@ var latencyPhases = []string{"request_headers", "request_body", "response_header
 // checks; anomaly = the cross-engine scorer).
 var findingEngines = []string{
 	"builtin", "anomaly", "jwt", "ratelimit", "coraza", "ipreputation", "bot",
-	"apikey", "hmacsign", "httpsig", "jwks", "xfcc", "graphql", "openapi", "other",
+	"apikey", "hmacsign", "httpsig", "jwks", "xfcc", "graphql", "openapi",
+	// Structural body checks split out of "builtin" so they're distinguishable:
+	// dlp = sensitive-data block/redaction; body_size = truncation guard;
+	// body_decode = undecodable/decode-budget blocks.
+	"dlp", "body_size", "body_decode", "other",
 }
 
 // findingActions are the non-allow outcomes findings are counted for.
 var findingActions = []string{"block", "detect", "shadow"}
+
+// budgetRejectReasons label body_budget_rejections_total: a per-request body cap
+// hit, or the process-wide in-flight budget exhausted (a body-flood signal).
+var budgetRejectReasons = []string{"per_request_cap", "inflight_budget"}
 
 // New builds and registers all collectors. instance, when non-empty, becomes a
 // constant label on every series so multi-machine metrics never collide.
@@ -134,6 +147,8 @@ func New(instance string) *Metrics {
 		shadow:           ctrVec("shadow_detections_total", "Shadow-mode would-block detections.", "listener"),
 		bodyBytes:        ctrVec("body_inspected_bytes_total", "Body bytes inspected.", "listener"),
 		findings:         ctrVec("findings_total", "Findings by the engine that produced them and the action taken (block/detect/shadow).", "listener", "engine", "action"),
+		bodyMutations:    ctrVec("body_mutations_total", "Bodies rewritten by DLP redaction (mutated for forwarding).", "listener"),
+		bodyBudgetReject: ctrVec("body_budget_rejections_total", "Body chunks rejected/truncated at intake by a memory bound.", "listener", "reason"),
 	}
 	m.activeVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "active_config_version", Help: "Active config version (value is always 1).",
@@ -226,15 +241,20 @@ func (m *Metrics) ForListener(id string) *ListenerMetrics {
 		return nil
 	}
 	lm := &ListenerMetrics{
-		requests:       m.requests.WithLabelValues(id),
-		allowed:        m.allowed.WithLabelValues(id),
-		blocked:        m.blocked.WithLabelValues(id),
-		detect:         m.detect.WithLabelValues(id),
-		shadow:         m.shadow.WithLabelValues(id),
-		bodyBytes:      m.bodyBytes.WithLabelValues(id),
-		latencyByPhase: make(map[string]prometheus.Observer, len(latencyPhases)),
-		latencyOther:   m.latency.WithLabelValues(id, "other"),
-		findingsByKey:  make(map[string]prometheus.Counter, len(findingEngines)*len(findingActions)),
+		requests:          m.requests.WithLabelValues(id),
+		allowed:           m.allowed.WithLabelValues(id),
+		blocked:           m.blocked.WithLabelValues(id),
+		detect:            m.detect.WithLabelValues(id),
+		shadow:            m.shadow.WithLabelValues(id),
+		bodyBytes:         m.bodyBytes.WithLabelValues(id),
+		bodyMutations:     m.bodyMutations.WithLabelValues(id),
+		budgetRejByReason: make(map[string]prometheus.Counter, len(budgetRejectReasons)),
+		latencyByPhase:    make(map[string]prometheus.Observer, len(latencyPhases)),
+		latencyOther:      m.latency.WithLabelValues(id, "other"),
+		findingsByKey:     make(map[string]prometheus.Counter, len(findingEngines)*len(findingActions)),
+	}
+	for _, r := range budgetRejectReasons {
+		lm.budgetRejByReason[r] = m.bodyBudgetReject.WithLabelValues(id, r)
 	}
 	for _, ph := range latencyPhases {
 		lm.latencyByPhase[ph] = m.latency.WithLabelValues(id, ph)
@@ -334,11 +354,20 @@ func (m *Metrics) SetBuildInfo(version, revision, goVersion, buildTime string) {
 
 // RecordDecision records one phase decision plus its latency, labeled by phase
 // (lock-free: the phase observer is pre-curried, looked up by a map read).
+//
+// The per-transaction tally (requests_total and the allowed counter) is recorded
+// only on a REQUEST-direction phase, so a request that also has its response
+// inspected isn't counted as two requests / two allows. A block counts on either
+// direction (a response block is still an enforcement action). Latency and
+// findings are recorded for every phase.
 func (lm *ListenerMetrics) RecordDecision(d *decision.Decision, phase string, latency time.Duration) {
 	if lm == nil || d == nil {
 		return
 	}
-	lm.requests.Inc()
+	isRequest := strings.HasPrefix(phase, "request")
+	if isRequest {
+		lm.requests.Inc()
+	}
 	obs := lm.latencyByPhase[phase]
 	if obs == nil {
 		obs = lm.latencyOther
@@ -350,14 +379,40 @@ func (lm *ListenerMetrics) RecordDecision(d *decision.Decision, phase string, la
 		lm.recordFinding(d.Engine, "block")
 	case d.Action == decision.Detect:
 		lm.detect.Inc()
-		lm.allowed.Inc()
+		if isRequest {
+			lm.allowed.Inc()
+		}
 		lm.recordFinding(d.Engine, "detect")
 	case d.Action == decision.Shadow:
 		lm.shadow.Inc()
-		lm.allowed.Inc()
+		if isRequest {
+			lm.allowed.Inc()
+		}
 		lm.recordFinding(d.Engine, "shadow")
 	default:
-		lm.allowed.Inc()
+		if isRequest {
+			lm.allowed.Inc()
+		}
+	}
+}
+
+// RecordBodyMutation counts one DLP body redaction (the body was rewritten for
+// forwarding).
+func (lm *ListenerMetrics) RecordBodyMutation() {
+	if lm == nil {
+		return
+	}
+	lm.bodyMutations.Inc()
+}
+
+// RecordBodyBudgetReject counts one intake truncation caused by a memory bound
+// (reason: per_request_cap or inflight_budget). An unknown reason is ignored.
+func (lm *ListenerMetrics) RecordBodyBudgetReject(reason string) {
+	if lm == nil {
+		return
+	}
+	if c := lm.budgetRejByReason[reason]; c != nil {
+		c.Inc()
 	}
 }
 

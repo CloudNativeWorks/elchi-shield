@@ -238,10 +238,12 @@ func (pr *Processor) appendBody(tx *pipeline.Transaction, dir pipeline.Direction
 		}
 		if truncated {
 			tx.SetBodyTruncated(true)
+			pr.lm.RecordBodyBudgetReject("per_request_cap")
 		}
 	}
 	if grant < int64(len(chunk)) { // global budget exhausted → treat as over-limit
 		tx.SetBodyTruncated(true)
+		pr.lm.RecordBodyBudgetReject("inflight_budget")
 	}
 }
 
@@ -258,6 +260,7 @@ func (pr *Processor) onRequestBody(ctx context.Context, tx *pipeline.Transaction
 		return immediateResponse(bd)
 	}
 	if tx.BodyMutated() { // DLP redaction rewrote the request body for forwarding
+		pr.lm.RecordBodyMutation()
 		return requestBodyMutation(tx.Body())
 	}
 	return requestBodyContinue()
@@ -316,6 +319,7 @@ func (pr *Processor) onResponseBody(ctx context.Context, tx *pipeline.Transactio
 		return immediateResponse(bd)
 	}
 	if tx.BodyMutated() { // DLP redaction rewrote the body for forwarding
+		pr.lm.RecordBodyMutation()
 		return responseBodyMutation(tx.Body())
 	}
 	return responseBodyContinue()

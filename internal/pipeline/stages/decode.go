@@ -63,7 +63,7 @@ func (bodyContentDecode) Process(_ context.Context, tx *pipeline.Transaction) pi
 	if err != nil {
 		// Unsupported/stacked encoding or corrupt stream → cannot inspect the real
 		// payload. Fail closed: block rather than inspect opaque bytes.
-		return deny(tx, "body.undecodable_encoding",
+		return denyEngine(tx, engineBodyDecode, "body.undecodable_encoding",
 			"body uses an encoding that cannot be inspected: "+enc, decision.SeverityMedium)
 	}
 	// Charge the decompression expansion against the shared in-flight body budget,
@@ -71,7 +71,7 @@ func (bodyContentDecode) Process(_ context.Context, tx *pipeline.Transaction) pi
 	// across streams even though their compressed bytes were tiny. On exhaustion,
 	// fail closed rather than hold the decoded body.
 	if extra := int64(len(decoded)) - int64(len(body)); extra > 0 && !tx.ReserveBody(extra) {
-		return deny(tx, "body.decode_budget",
+		return denyEngine(tx, engineBodyDecode, "body.decode_budget",
 			"decoded body exceeds the in-flight inspection budget", decision.SeverityMedium)
 	}
 	tx.ReplaceBody(decoded)
