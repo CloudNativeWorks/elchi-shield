@@ -431,6 +431,10 @@ func validateHMACSign(h *HMACSignSpec, add func(field string, err error)) {
 	}
 	if w := h.Window.AsDuration(); w < 0 {
 		add("engines.hmac_sign.window", errors.New("must be >= 0"))
+	} else if w > 0 && w < time.Second {
+		// The signed timestamp is epoch SECONDS, so a sub-second window truncates
+		// to an exact-second match and rejects nearly all traffic — a footgun.
+		add("engines.hmac_sign.window", errors.New("must be >= 1s (the timestamp is second-granular) or 0 to use the default"))
 	} else if w > hmacMaxWindow {
 		add("engines.hmac_sign.window", fmt.Errorf("must be <= %s", hmacMaxWindow))
 	}
@@ -512,6 +516,11 @@ func validateBot(b *BotSpec, add func(field string, err error)) {
 		(b.Heuristics != nil && b.Heuristics.ScorePerAnomaly > 0)
 	if hasScoreLayer && b.ScoreThreshold <= 0 && !b.EmitScore {
 		add("engines.bot.score_threshold", errors.New("must be > 0 when score layers are configured (or set emit_score to feed the policy anomaly scorer)"))
+	}
+	// The reverse: emit_score with nothing that produces a score is a silent no-op
+	// (the engine feeds 0 to the anomaly scorer and never contributes).
+	if b.EmitScore && !hasScoreLayer {
+		add("engines.bot.emit_score", errors.New("requires at least one score layer (user_agent.score_known_bot, tls_fingerprint.score_ja4, or heuristics.score_per_anomaly)"))
 	}
 	for i, vb := range b.VerifiedBots {
 		p := fmt.Sprintf("engines.bot.verified_bots[%d]", i)

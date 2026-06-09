@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,23 @@ func TestOperationsPerDocumentCapped(t *testing.T) {
 	q := jsonQ(`query A { a } query B { b } query C { c }`)
 	if v := inspect(t, e, post(q)); v.RuleID != "graphql.operations" {
 		t.Fatalf("3 operations in one document should block, got %+v", v)
+	}
+}
+
+func TestGraphQLOverGET(t *testing.T) {
+	// A deep query moved to GET (?query=) must still be inspected, not bypass the
+	// guard by avoiding POST.
+	e, _ := New(Config{MaxDepth: 3})
+	deep := url.QueryEscape(`{ a { b { c { d } } } }`) // depth 4
+	get := &engine.Request{Direction: engine.DirectionRequest, Method: "GET",
+		Path: "/graphql?query=" + deep, ContentType: "", Headers: hdrs{}}
+	if v := inspect(t, e, get); v.RuleID != "graphql.depth" {
+		t.Fatalf("deep query over GET should block, got %+v", v)
+	}
+	// A GET without a query param passes (not a GraphQL request).
+	plain := &engine.Request{Direction: engine.DirectionRequest, Method: "GET", Path: "/graphql", Headers: hdrs{}}
+	if v := inspect(t, e, plain); v.Action == decision.Block {
+		t.Fatal("a GET without a query param must pass through")
 	}
 }
 

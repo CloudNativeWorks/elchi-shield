@@ -354,6 +354,10 @@ spec:
 			"                score_threshold: 50\n                tls_fingerprint: { score_ja4: { abc: -5 } }\n",
 			"must be >= 0",
 		},
+		"emit_score with no score layer": {
+			"                emit_score: true\n                user_agent: { deny_substrings: [\"sqlmap\"] }\n",
+			"emit_score",
+		},
 	}
 	for name, tc := range cases {
 		dir := writeFiles(t, map[string]string{"a.yaml": base + tc.frag})
@@ -472,6 +476,10 @@ spec:
 		"window too large": {
 			"                secret: a-long-enough-shared-secret\n                window: 24h\n",
 			"must be <= 1h0m0s",
+		},
+		"sub-second window": {
+			"                secret: a-long-enough-shared-secret\n                window: 500ms\n",
+			"must be >= 1s",
 		},
 		"nonce_ttl too large": {
 			"                secret: a-long-enough-shared-secret\n                nonce_ttl: 24h\n",

@@ -4,9 +4,10 @@
 // introspection block — with a fragment-cycle bound so the guard cannot itself
 // be DoS'd. It is pure-Go (vektah/gqlparser) and ships in the lean binary.
 //
-// The engine only acts on requests that look like GraphQL (POST + a matching
-// content-type, and an optional path allow-list); anything else passes straight
-// through so non-GraphQL routes are never penalized.
+// The engine acts on requests that look like GraphQL: a POST with a matching
+// content-type, or a GET carrying a ?query= parameter (GraphQL-over-GET), within
+// an optional path allow-list. Anything else passes straight through so
+// non-GraphQL routes are never penalized.
 package graphql
 
 import (
@@ -14,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -34,7 +36,7 @@ type Config struct {
 	MaxAliases         int
 	MaxRootFields      int
 	MaxTotalFields     int
-	MaxOperations      int // batched (JSON array) operation cap; 0 → 1
+	MaxOperations      int // batched/multi-operation cap; 0 disables (like the other limits)
 	BlockIntrospection bool
 	MaxFragmentDepth   int // fragment-spread recursion bound (default 32)
 	// MaxComplexity bounds the TOTAL selection nodes walked per operation (after
@@ -90,15 +92,12 @@ func (*Engine) Close() error { return nil }
 // Inspect parses and checks a GraphQL request. Non-GraphQL requests and
 // responses pass through.
 func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdict, error) {
-	if req.Direction != engine.DirectionRequest || req.Method != http.MethodPost {
+	if req.Direction != engine.DirectionRequest {
 		return decision.Verdict{}, nil
 	}
-	if !e.gated(req) {
-		return decision.Verdict{}, nil
-	}
-	queries, ok := extractQueries(req)
+	queries, ok := e.extract(req)
 	if !ok {
-		return decision.Verdict{}, nil // not a recognizable GraphQL body → don't penalize
+		return decision.Verdict{}, nil // not a recognizable GraphQL request → don't penalize
 	}
 	if e.cfg.MaxOperations > 0 && len(queries) > e.cfg.MaxOperations {
 		return block("graphql.batch", fmt.Sprintf("batched operations %d exceed max %d", len(queries), e.cfg.MaxOperations)), nil
@@ -111,16 +110,44 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	return decision.Verdict{}, nil
 }
 
-// gated reports whether the request matches the GraphQL content-type (and path
-// allow-list, if configured).
-func (e *Engine) gated(req *engine.Request) bool {
+// extract returns the GraphQL query strings to inspect, or ok=false when the
+// request isn't a GraphQL request this engine guards. POST carries the document
+// in the body; GET carries it in the ?query= parameter (commonly used for cached
+// reads) — guarding only POST would let an attacker move a deep/introspection
+// query to GET and evade the limits.
+func (e *Engine) extract(req *engine.Request) ([]string, bool) {
+	switch req.Method {
+	case http.MethodPost:
+		if !e.contentTypeMatch(req) || !e.pathAllowed(req) {
+			return nil, false
+		}
+		return extractBodyQueries(req)
+	case http.MethodGet:
+		if !e.pathAllowed(req) {
+			return nil, false
+		}
+		if q := queryParam(req.Path, "query"); q != "" {
+			return []string{q}, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+// contentTypeMatch reports whether the request's content-type is a configured
+// GraphQL media type.
+func (e *Engine) contentTypeMatch(req *engine.Request) bool {
 	ct := strings.ToLower(req.ContentType)
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = strings.TrimSpace(ct[:i])
 	}
-	if !slices.Contains(e.contentTypes, ct) {
-		return false
-	}
+	return slices.Contains(e.contentTypes, ct)
+}
+
+// pathAllowed reports whether the request path is within the configured path
+// allow-list (empty = any path).
+func (e *Engine) pathAllowed(req *engine.Request) bool {
 	if len(e.paths) == 0 {
 		return true
 	}
@@ -131,6 +158,19 @@ func (e *Engine) gated(req *engine.Request) bool {
 		}
 	}
 	return false
+}
+
+// queryParam returns the named URL query parameter from a request path, or "".
+func queryParam(rawPath, name string) string {
+	_, q, ok := strings.Cut(rawPath, "?")
+	if !ok {
+		return ""
+	}
+	vals, err := url.ParseQuery(q)
+	if err != nil {
+		return ""
+	}
+	return vals.Get(name)
 }
 
 // checkQuery parses one GraphQL document and enforces the limits.
@@ -250,7 +290,7 @@ func (e *Engine) walk(sel ast.SelectionSet, depth int, frags map[string]*ast.Fra
 // supports a single JSON object {"query": "..."}, a JSON array of such objects
 // (batching), and a raw application/graphql body. Returns ok=false when the body
 // is not a recognizable GraphQL payload.
-func extractQueries(req *engine.Request) ([]string, bool) {
+func extractBodyQueries(req *engine.Request) ([]string, bool) {
 	ct := strings.ToLower(req.ContentType)
 	if strings.HasPrefix(ct, "application/graphql") {
 		return []string{string(req.Body)}, true
