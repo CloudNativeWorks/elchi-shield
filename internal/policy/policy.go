@@ -117,7 +117,7 @@ func compileDLP(d *config.DLPSpec) *CompiledDLP {
 }
 
 // FromResolved builds a CompiledPolicy from a fully-resolved config policy. The
-// id should uniquely identify the policy's scope (e.g. host[/listener]/route)
+// id should uniquely identify the policy's scope (e.g. hosts/route)
 // for attribution in decisions and audit events.
 func FromResolved(id string, r config.ResolvedPolicy) *CompiledPolicy {
 	checks := compileChecks(r.Checks)

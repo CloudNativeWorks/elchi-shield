@@ -70,9 +70,17 @@ type feedMeta struct {
 	severity decision.Severity
 }
 
+// geoLookuper is the narrow GeoIP read surface geoMatch depends on; *geoip.Reader
+// satisfies it. Defined here (consumer side) so the lookup-error fail-close path
+// is testable without a real MMDB.
+type geoLookuper interface {
+	Lookup(ip netip.Addr) (geoip.Record, error)
+	Close() error
+}
+
 // geoMatch holds the compiled GeoIP block/allow sets.
 type geoMatch struct {
-	reader         *geoip.Reader
+	reader         geoLookuper
 	blockCountries map[string]struct{}
 	allowCountries map[string]struct{}
 	blockASNs      map[uint]struct{}
@@ -222,35 +230,42 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 		}
 	}
 	if e.geo != nil {
-		if v, blocked := e.geo.inspect(ip); blocked {
+		v, blocked, err := e.geo.inspect(ip)
+		if err != nil {
+			// Propagate the lookup failure so the executor applies the policy
+			// fail posture. Swallowing it here would be an unconditional
+			// fail-open that a country allow-list (default-deny positive
+			// security) must never have.
+			return decision.Verdict{}, err
+		}
+		if blocked {
 			return v, nil
 		}
 	}
 	return decision.Verdict{}, nil
 }
 
-// inspect evaluates the GeoIP block/allow rules for ip. A lookup error or a miss
-// is treated per blockOnMissing (default: continue).
-func (g *geoMatch) inspect(ip netip.Addr) (decision.Verdict, bool) {
+// inspect evaluates the GeoIP block/allow rules for ip. A lookup error is
+// returned to the caller (so the policy fail posture governs); a clean miss is
+// treated per blockOnMissing (default: continue).
+func (g *geoMatch) inspect(ip netip.Addr) (decision.Verdict, bool, error) {
 	rec, err := g.reader.Lookup(ip)
 	if err != nil {
-		// A database error is fail-open at the engine; the policy fail posture
-		// still governs the request via the executor if configured fail_close.
-		return decision.Verdict{}, false
+		return decision.Verdict{}, false, fmt.Errorf("geoip lookup: %w", err)
 	}
 	if rec.Country == "" && rec.ASN == 0 {
 		if g.blockOnMissing {
-			return block("ipreputation.geo_unknown", "source IP not found in GeoIP database", decision.SeverityLow), true
+			return block("ipreputation.geo_unknown", "source IP not found in GeoIP database", decision.SeverityLow), true, nil
 		}
-		return decision.Verdict{}, false
+		return decision.Verdict{}, false, nil
 	}
 	if rec.Country != "" {
 		if _, deny := g.blockCountries[rec.Country]; deny {
-			return block("ipreputation.geo_country:"+rec.Country, "source country blocked: "+rec.Country, decision.SeverityMedium), true
+			return block("ipreputation.geo_country:"+rec.Country, "source country blocked: "+rec.Country, decision.SeverityMedium), true, nil
 		}
 		if g.hasAllow {
 			if _, ok := g.allowCountries[rec.Country]; !ok {
-				return block("ipreputation.geo_country:"+rec.Country, "source country not allowed: "+rec.Country, decision.SeverityMedium), true
+				return block("ipreputation.geo_country:"+rec.Country, "source country not allowed: "+rec.Country, decision.SeverityMedium), true, nil
 			}
 		}
 	} else if g.hasAllow {
@@ -258,14 +273,14 @@ func (g *geoMatch) inspect(ip netip.Addr) (decision.Verdict, bool) {
 		// ASN-only DB hit reaches here, since the all-missing case returned above).
 		// Default-deny: an IP whose country can't be confirmed is not on the
 		// allow-list, so it must not slip through the positive-security control.
-		return block("ipreputation.geo_country:unknown", "source country unknown, not in allow-list", decision.SeverityMedium), true
+		return block("ipreputation.geo_country:unknown", "source country unknown, not in allow-list", decision.SeverityMedium), true, nil
 	}
 	if rec.ASN != 0 {
 		if _, deny := g.blockASNs[rec.ASN]; deny {
-			return block(fmt.Sprintf("ipreputation.geo_asn:%d", rec.ASN), fmt.Sprintf("source ASN blocked: %d", rec.ASN), decision.SeverityMedium), true
+			return block(fmt.Sprintf("ipreputation.geo_asn:%d", rec.ASN), fmt.Sprintf("source ASN blocked: %d", rec.ASN), decision.SeverityMedium), true, nil
 		}
 	}
-	return decision.Verdict{}, false
+	return decision.Verdict{}, false, nil
 }
 
 func block(ruleID, reason string, sev decision.Severity) decision.Verdict {

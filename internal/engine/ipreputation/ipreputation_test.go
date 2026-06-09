@@ -2,12 +2,15 @@ package ipreputation
 
 import (
 	"context"
+	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
+	"github.com/cloudnativeworks/elchi-shield/internal/geoip"
 )
 
 type hdrs map[string]string
@@ -247,6 +250,32 @@ func TestGeoOnMissing(t *testing.T) {
 func TestGeoBadDatabase(t *testing.T) {
 	if _, err := New(Config{Geo: &GeoConfig{CountryDBFile: "/nonexistent.mmdb", BlockCountries: []string{"GB"}}}); err == nil {
 		t.Fatal("expected error for missing GeoIP database")
+	}
+}
+
+// errReader is a geoLookuper whose Lookup always fails, simulating a corrupt
+// DB record or read error on an otherwise-open database.
+type errReader struct{ err error }
+
+func (r errReader) Lookup(netip.Addr) (geoip.Record, error) { return geoip.Record{}, r.err }
+func (r errReader) Close() error                            { return nil }
+
+// A GeoIP lookup error must PROPAGATE (so the executor applies the policy fail
+// posture), not silently fail-open — especially under a country allow-list,
+// which is a default-deny positive control.
+func TestGeoLookupErrorPropagates(t *testing.T) {
+	wantErr := errors.New("corrupt mmdb record")
+	e := &Engine{geo: &geoMatch{
+		reader:         errReader{err: wantErr},
+		hasAllow:       true,
+		allowCountries: map[string]struct{}{"GB": {}},
+	}}
+	_, err := e.Inspect(context.Background(), reqFrom("81.2.69.142"))
+	if err == nil {
+		t.Fatal("expected geo lookup error to propagate (fail-close), got nil (fail-open)")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error should wrap the lookup failure, got %v", err)
 	}
 }
 
