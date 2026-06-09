@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"hash/maphash"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ import (
 type KeySource uint8
 
 const (
-	// KeyIP limits by client IP (from Header, default X-Forwarded-First).
+	// KeyIP limits by the trusted, pre-derived client IP (req.SourceIP).
 	KeyIP KeySource = iota
 	// KeyHost limits by request authority/host.
 	KeyHost
@@ -42,8 +43,8 @@ type Config struct {
 	Burst int
 	// Key selects the rate-limit dimension.
 	Key KeySource
-	// Header is the header read for KeyIP (the first comma-separated token is
-	// taken) or KeyHeader. Defaults to "X-Forwarded-For" for KeyIP.
+	// Header is the header read for KeyHeader. (KeyIP keys on the trusted,
+	// pre-derived SourceIP and never reads a raw header.)
 	Header string
 	// now is injectable for tests; defaults to time.Now.
 	now func() time.Time
@@ -90,11 +91,6 @@ func New(cfg Config) (*Engine, error) {
 	if now == nil {
 		now = time.Now
 	}
-	header := cfg.Header
-	if cfg.Key == KeyIP && header == "" {
-		header = "X-Forwarded-For"
-	}
-	cfg.Header = header
 	e := &Engine{cfg: cfg, rps: cfg.RequestsPerSecond, burst: burst, now: now, seed: maphash.MakeSeed()}
 	for i := range e.shards {
 		e.shards[i].buckets = make(map[string]*bucket)
@@ -138,26 +134,32 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 func (e *Engine) key(req *engine.Request) string {
 	switch e.cfg.Key {
 	case KeyHost:
-		return strings.ToLower(req.Host)
+		return canonHost(req.Host)
 	case KeyHeader:
 		if v, ok := req.Headers.Header(e.cfg.Header); ok {
 			return v
 		}
 		return ""
 	default: // KeyIP
-		// Prefer the single derived client IP (tx.SourceIP). Fall back to the
-		// configured header only when SourceIP wasn't derived (defensive).
-		if req.SourceIP != "" {
-			return req.SourceIP
-		}
-		if v, ok := req.Headers.Header(e.cfg.Header); ok && v != "" {
-			if i := strings.IndexByte(v, ','); i >= 0 {
-				v = v[:i]
-			}
-			return strings.TrimSpace(v)
-		}
-		return ""
+		// Key ONLY on the trusted, pre-derived client IP (tx.SourceIP, the single
+		// source of truth — derived from the rightmost trusted X-Forwarded-For hop).
+		// Never read a raw XFF token here: the leftmost is client-settable, so an
+		// attacker could rotate it to mint unlimited fresh buckets and evade the
+		// limit entirely. An empty SourceIP yields no key → not limited (fail open
+		// on a missing IP rather than on a spoofable one).
+		return req.SourceIP
 	}
+}
+
+// canonHost normalizes a host key: trailing :port stripped, IPv6 brackets
+// removed, lowercased — so an attacker can't split a host's bucket by varying the
+// port or letter case of the authority.
+func canonHost(h string) string {
+	h = strings.TrimSpace(h)
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return strings.ToLower(strings.Trim(h, "[]"))
 }
 
 // allow refills the key's bucket by elapsed time and consumes one token,

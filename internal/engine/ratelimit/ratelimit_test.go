@@ -50,13 +50,19 @@ func req(h hdrs) *engine.Request {
 	return &engine.Request{Direction: engine.DirectionRequest, Host: "api.example.com", Headers: h}
 }
 
+// ipReq builds a request keyed by the trusted, pre-derived SourceIP (what the
+// pipeline fills before the engine runs).
+func ipReq(ip string) *engine.Request {
+	return &engine.Request{Direction: engine.DirectionRequest, Host: "api.example.com", SourceIP: ip, Headers: hdrs{}}
+}
+
 func TestRateLimitBurstThenBlock(t *testing.T) {
 	now := time.Unix(0, 0)
 	e, err := New(Config{RequestsPerSecond: 1, Burst: 3, Key: KeyIP, now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := req(hdrs{"X-Forwarded-For": "1.2.3.4, 10.0.0.1"})
+	r := ipReq("1.2.3.4")
 
 	// Burst of 3 allowed, then blocked (clock frozen → no refill).
 	for range 3 {
@@ -83,14 +89,50 @@ func TestRateLimitPerKeyIsolation(t *testing.T) {
 	now := time.Unix(0, 0)
 	e, _ := New(Config{RequestsPerSecond: 1, Burst: 1, Key: KeyIP, now: func() time.Time { return now }})
 	// Different IPs have independent buckets.
-	if v, _ := e.Inspect(context.Background(), req(hdrs{"X-Forwarded-For": "1.1.1.1"})); v.Action == decision.Block {
+	if v, _ := e.Inspect(context.Background(), ipReq("1.1.1.1")); v.Action == decision.Block {
 		t.Fatal("first IP should pass")
 	}
-	if v, _ := e.Inspect(context.Background(), req(hdrs{"X-Forwarded-For": "2.2.2.2"})); v.Action == decision.Block {
+	if v, _ := e.Inspect(context.Background(), ipReq("2.2.2.2")); v.Action == decision.Block {
 		t.Fatal("a different IP must not share the first IP's bucket")
 	}
-	if v, _ := e.Inspect(context.Background(), req(hdrs{"X-Forwarded-For": "1.1.1.1"})); v.Action != decision.Block {
+	if v, _ := e.Inspect(context.Background(), ipReq("1.1.1.1")); v.Action != decision.Block {
 		t.Fatal("first IP's second request should block")
+	}
+}
+
+func TestRateLimitKeysOnTrustedSourceIPNotXFF(t *testing.T) {
+	// A spoofable X-Forwarded-For must NOT key the limit. With no derived SourceIP,
+	// rotating the XFF header must not mint fresh buckets — the engine keys only on
+	// SourceIP, so a missing SourceIP means "no key" (not limited), never the
+	// attacker-controlled header.
+	e, _ := New(Config{RequestsPerSecond: 1, Burst: 1, Key: KeyIP})
+	for i, xff := range []string{"9.9.9.1", "9.9.9.2", "9.9.9.3"} {
+		r := &engine.Request{Direction: engine.DirectionRequest, Headers: hdrs{"X-Forwarded-For": xff}}
+		if v, _ := e.Inspect(context.Background(), r); v.Action == decision.Block {
+			t.Fatalf("request %d: a raw XFF token must not be used as the limit key", i)
+		}
+	}
+	// With a real derived SourceIP, the limit applies (burst 1 → 2nd blocks).
+	if v, _ := e.Inspect(context.Background(), ipReq("8.8.8.8")); v.Action == decision.Block {
+		t.Fatal("first request for a derived IP should pass")
+	}
+	if v, _ := e.Inspect(context.Background(), ipReq("8.8.8.8")); v.Action != decision.Block {
+		t.Fatal("second request for the same derived IP should block")
+	}
+}
+
+func TestRateLimitHostKeyIgnoresPort(t *testing.T) {
+	now := time.Unix(0, 0)
+	e, _ := New(Config{RequestsPerSecond: 1, Burst: 1, Key: KeyHost, now: func() time.Time { return now }})
+	mk := func(host string) *engine.Request {
+		return &engine.Request{Direction: engine.DirectionRequest, Host: host, Headers: hdrs{}}
+	}
+	if v, _ := e.Inspect(context.Background(), mk("api.example.com")); v.Action == decision.Block {
+		t.Fatal("first host request should pass")
+	}
+	// Same host with a different port must share the bucket (no split-by-port).
+	if v, _ := e.Inspect(context.Background(), mk("API.example.com:8443")); v.Action != decision.Block {
+		t.Fatal("a varied port/case must not mint a fresh host bucket")
 	}
 }
 
