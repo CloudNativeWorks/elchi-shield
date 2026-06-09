@@ -237,8 +237,8 @@ func isJSONContentType(ct string) bool {
 	if err != nil {
 		// Fall back to the part before the first ';' for lenient inputs that
 		// ParseMediaType rejects but a browser/backend would accept.
-		if i := strings.IndexByte(ct, ';'); i >= 0 {
-			mediaType = ct[:i]
+		if before, _, ok := strings.Cut(ct, ";"); ok {
+			mediaType = before
 		} else {
 			mediaType = ct
 		}

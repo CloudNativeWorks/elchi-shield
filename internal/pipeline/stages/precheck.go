@@ -96,10 +96,7 @@ func (ci contextInit) Process(_ context.Context, tx *pipeline.Transaction) pipel
 func clientIP(tx *pipeline.Transaction, trustedHops int) string {
 	if v, ok := tx.Header("x-forwarded-for"); ok && v != "" {
 		toks := strings.Split(v, ",")
-		idx := len(toks) - 1 - trustedHops
-		if idx < 0 {
-			idx = 0
-		}
+		idx := max(len(toks)-1-trustedHops, 0)
 		if ip := canonIP(strings.TrimSpace(toks[idx])); ip != "" {
 			return ip
 		}

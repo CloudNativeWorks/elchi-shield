@@ -85,11 +85,9 @@ func TestBufferedExporterCloseIsSafe(t *testing.T) {
 	// Concurrent Export while closing must not panic (send-on-closed-channel).
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = b.Export(context.Background(), &Event{})
-		}()
+		})
 	}
 	if err := b.Close(); err != nil {
 		t.Fatal(err)

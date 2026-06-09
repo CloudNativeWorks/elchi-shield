@@ -35,7 +35,7 @@ func TestHotPathZeroAlloc(t *testing.T) {
 func mustBenchPipeline(t *testing.T, n int) *Pipeline {
 	t.Helper()
 	stages := make([]Stage, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		stages = append(stages, benchStage("s", PhasePreCheck))
 	}
 	p, err := New("alloc", stages, nil)

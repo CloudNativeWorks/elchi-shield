@@ -59,7 +59,7 @@ type Transaction struct {
 	Snapshot *runtime.Snapshot
 
 	// Extracted request attributes (filled by the context-init stage).
-	ListenerID  string
+	ListenerID string
 	// NodeID is the Envoy node id from ext_proc request_attributes (xds.node.id),
 	// used as the per-listener metric label when present. Empty when not sent.
 	NodeID      string

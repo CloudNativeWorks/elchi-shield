@@ -35,10 +35,7 @@ func (b *bodyBudget) Acquire(n int64) int64 {
 		if avail <= 0 {
 			return 0
 		}
-		grant := n
-		if grant > avail {
-			grant = avail
-		}
+		grant := min(n, avail)
 		if b.inUse.CompareAndSwap(cur, cur+grant) {
 			return grant
 		}

@@ -48,7 +48,7 @@ func TestLookupASN(t *testing.T) {
 		ip   string
 		want uint
 	}{
-		{"1.128.0.1", 1221}, // Telstra
+		{"1.128.0.1", 1221},  // Telstra
 		{"12.81.92.1", 7018}, // AT&T
 		{"8.8.8.8", 0},       // not in the test DB
 	} {

@@ -17,7 +17,7 @@ func benchStage(name string, phase Phase) Stage {
 func buildBenchPipeline(b *testing.B, n int) *Pipeline {
 	b.Helper()
 	stages := make([]Stage, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		stages = append(stages, benchStage("s", PhasePreCheck))
 	}
 	p, err := New("bench", stages, nil)
@@ -91,7 +91,7 @@ func name(n int) string {
 // header count, with the target header last (worst case).
 func BenchmarkHeaderLookup(b *testing.B) {
 	tx := &Transaction{}
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		tx.Headers = append(tx.Headers, Header{Name: "x-pad-" + string(rune('a'+i)), Value: "v"})
 	}
 	tx.Headers = append(tx.Headers, Header{Name: "content-type", Value: "application/json"})

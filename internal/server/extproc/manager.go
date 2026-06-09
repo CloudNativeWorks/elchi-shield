@@ -71,10 +71,7 @@ func NewManager(base Config, specs []ListenerSpec, maxStreams uint32, log *slog.
 func maxRecvMsgBytes(maxBody int64) int {
 	const headroom = 1 << 20
 	const floor = 4 << 20
-	v := maxBody + headroom
-	if v < floor {
-		v = floor
-	}
+	v := max(maxBody+headroom, floor)
 	return int(v)
 }
 

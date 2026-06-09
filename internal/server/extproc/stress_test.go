@@ -78,16 +78,14 @@ func TestStressConcurrentListenersWithReloads(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Reloader: continuously swap snapshots (atomic, lock-free) + retire old.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		i := 0
 		for ctx.Err() == nil {
 			store.Set(snaps[i%len(snaps)])
 			i++
 			time.Sleep(time.Millisecond)
 		}
-	}()
+	})
 
 	// Concurrent request load across all listeners.
 	for _, client := range clients {

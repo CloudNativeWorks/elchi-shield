@@ -468,11 +468,11 @@ func TestClientIPTrustedHops(t *testing.T) {
 
 func TestClientIPCanonicalization(t *testing.T) {
 	cases := map[string]string{
-		"::ffff:1.2.3.4":   "1.2.3.4",       // IPv4-in-IPv6 unmapped
-		"1.2.3.4:5678":     "1.2.3.4",       // ip:port stripped
-		"[2001:db8::1]:443": "2001:db8::1",  // ipv6:port stripped
-		"1.2.3.4":          "1.2.3.4",
-		"not-an-ip":        "",
+		"::ffff:1.2.3.4":    "1.2.3.4",     // IPv4-in-IPv6 unmapped
+		"1.2.3.4:5678":      "1.2.3.4",     // ip:port stripped
+		"[2001:db8::1]:443": "2001:db8::1", // ipv6:port stripped
+		"1.2.3.4":           "1.2.3.4",
+		"not-an-ip":         "",
 	}
 	for in, want := range cases {
 		tx := txWithHeaders("X-Real-IP", in)

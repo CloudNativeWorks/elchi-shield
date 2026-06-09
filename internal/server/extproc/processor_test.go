@@ -113,7 +113,8 @@ func reqTrailers() *extprocv3.ProcessingRequest {
 	}}
 }
 
-func ptr[T any](v T) *T { return &v }
+//go:fix inline
+func ptr[T any](v T) *T { return new(v) }
 
 func buildProcessor(t *testing.T) *Processor {
 	t.Helper()
@@ -128,7 +129,7 @@ func buildProcessor(t *testing.T) *Processor {
 				{
 					Match: config.Match{PathPrefix: "/json"},
 					Policy: config.PolicySpec{
-						Mode:                ptr(block),
+						Mode:                new(block),
 						InspectRequestBody:  &tru,
 						MaxRequestBodyBytes: &maxBody,
 						Checks:              config.Checks{Body: &config.BodyChecks{RequireJSON: true}},
@@ -137,7 +138,7 @@ func buildProcessor(t *testing.T) *Processor {
 				{
 					Match: config.Match{PathPrefix: "/"},
 					Policy: config.PolicySpec{
-						Mode:   ptr(block),
+						Mode:   new(block),
 						Checks: config.Checks{Headers: &config.HeaderChecks{Forbidden: []string{"X-Debug"}}},
 					},
 				},
@@ -306,7 +307,7 @@ func TestProcessorResponseBodyInspection(t *testing.T) {
 	tru := true
 	maxBody := int64(1 << 20)
 	pr := procWithPolicy(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
-		Mode:                 ptr(block),
+		Mode:                 new(block),
 		InspectResponseBody:  &tru,
 		MaxResponseBodyBytes: &maxBody,
 		Checks:               config.Checks{Body: &config.BodyChecks{RequireJSON: true}},
@@ -336,7 +337,7 @@ func TestProcessorMultiChunkBody(t *testing.T) {
 	tru := true
 	maxBody := int64(1 << 20)
 	pr := procWithPolicy(t, config.Match{PathPrefix: "/json"}, config.PolicySpec{
-		Mode:                ptr(block),
+		Mode:                new(block),
 		InspectRequestBody:  &tru,
 		MaxRequestBodyBytes: &maxBody,
 		Checks:              config.Checks{Body: &config.BodyChecks{RequireJSON: true}},
@@ -365,7 +366,7 @@ func TestProcessorMultiChunkBody(t *testing.T) {
 func TestProcessorHeaderOnlyEngineNoBodyBuffer(t *testing.T) {
 	block := config.ModeBlock
 	pr := procWithPolicy(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
-		Mode: ptr(block),
+		Mode: new(block),
 		Engines: &config.EnginesSpec{JWT: &config.JWTSpec{
 			Algorithms: []string{"HS256"}, HMACSecret: "secret", Audience: "api",
 		}},
@@ -385,7 +386,7 @@ func TestProcessorHeaderOnlyEngineAllowsNoBodyRequest(t *testing.T) {
 	// HS256 token for {"aud":"api"} signed with "secret".
 	const token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJhcGkifQ.uMMm9JjV5pZ0Z3n0w0v6Yn0pHj0xY3Q0a0b0c0d0e0"
 	pr := procWithPolicy(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
-		Mode: ptr(block),
+		Mode: new(block),
 		Engines: &config.EnginesSpec{JWT: &config.JWTSpec{
 			Algorithms: []string{"HS256"}, HMACSecret: "secret", Audience: "api",
 		}},
@@ -404,7 +405,7 @@ func requireJSONProc(t *testing.T) *Processor {
 	tru := true
 	maxBody := int64(1 << 20)
 	return procWithPolicy(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
-		Mode:                ptr(block),
+		Mode:                new(block),
 		InspectRequestBody:  &tru,
 		MaxRequestBodyBytes: &maxBody,
 		Checks:              config.Checks{Body: &config.BodyChecks{RequireJSON: true}},
@@ -463,7 +464,7 @@ func TestProcessorInFlightBudgetBlocksOversizedAggregate(t *testing.T) {
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
 			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{
-				Mode:                ptr(block),
+				Mode:                new(block),
 				InspectRequestBody:  &tru,
 				MaxRequestBodyBytes: &bigCap, // per-request cap is generous...
 			}}},
@@ -500,7 +501,7 @@ func TestProcessorHeaderOnlyPolicyTrailersNoDoubleFinish(t *testing.T) {
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
 			Hosts:  []string{"api.example.com"},
-			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{Mode: ptr(block)}}},
+			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{Mode: new(block)}}},
 		}}},
 	}
 	snap, err := runtime.NewSnapshot(cfg, time.Now())
@@ -532,7 +533,7 @@ func TestDecisionLogIsRichAndStructured(t *testing.T) {
 	log := logging.New(logging.Options{Output: &buf, Level: "debug"})
 	block := config.ModeBlock
 	pr := procWithPolicy(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
-		Mode:   ptr(block),
+		Mode:   new(block),
 		Checks: config.Checks{Headers: &config.HeaderChecks{Forbidden: []string{"X-Debug"}}},
 	})
 	pr.log = log // inject a capturing logger
@@ -591,7 +592,7 @@ func TestProcessorBudgetReleasedBetweenPhases(t *testing.T) {
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
 			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{
-				Mode:                 ptr(block),
+				Mode:                 new(block),
 				InspectRequestBody:   &tru,
 				InspectResponseBody:  &tru,
 				MaxRequestBodyBytes:  &bodyCap,
@@ -645,7 +646,7 @@ func TestProcessorDetectModeAuditsEveryFinding(t *testing.T) {
 	detect := config.ModeDetect
 	cap := &captureExporter{}
 	pr := procWithAuditor(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
-		Mode:   ptr(detect),
+		Mode:   new(detect),
 		Checks: config.Checks{Headers: &config.HeaderChecks{Forbidden: []string{"X-Debug"}}},
 		Engines: &config.EnginesSpec{JWT: &config.JWTSpec{
 			Algorithms: []string{"HS256"}, HMACSecret: "secret", Audience: "api",
@@ -676,7 +677,7 @@ func TestProcessorDetectModeAuditsEveryFinding(t *testing.T) {
 func TestProcessorRateLimit429(t *testing.T) {
 	block := config.ModeBlock
 	pr := procWithPolicy(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
-		Mode:    ptr(block),
+		Mode:    new(block),
 		Engines: &config.EnginesSpec{RateLimit: &config.RateLimitSpec{RequestsPerSecond: 1, Burst: 2, Key: "ip"}},
 	})
 	hdr := []string{":authority", "api.example.com", ":path", "/x", ":method", "GET", "x-forwarded-for", "9.9.9.9, 10.0.0.1"}

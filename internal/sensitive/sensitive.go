@@ -8,6 +8,7 @@ package sensitive
 import (
 	"context"
 	"regexp"
+	"slices"
 	"sort"
 )
 
@@ -98,10 +99,8 @@ func (d *Detector) Scan(_ context.Context, _ string, body []byte) (bool, string)
 			return true, p.kind
 		}
 	}
-	for _, m := range d.luhn.FindAll(body, -1) {
-		if luhnValid(m) {
-			return true, "credit_card"
-		}
+	if slices.ContainsFunc(d.luhn.FindAll(body, -1), luhnValid) {
+		return true, "credit_card"
 	}
 	return false, ""
 }
@@ -112,8 +111,7 @@ func luhnValid(b []byte) bool {
 	sum := 0
 	alt := false
 	count := 0
-	for i := len(b) - 1; i >= 0; i-- {
-		c := b[i]
+	for _, c := range slices.Backward(b) {
 		if c == ' ' || c == '-' {
 			continue
 		}

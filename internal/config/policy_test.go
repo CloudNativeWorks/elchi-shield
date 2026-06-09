@@ -5,13 +5,14 @@ import (
 	"time"
 )
 
-func ptr[T any](v T) *T { return &v }
+//go:fix inline
+func ptr[T any](v T) *T { return new(v) }
 
 func TestResolveInheritanceOrder(t *testing.T) {
 	base := DefaultPolicy()
-	fileDefaults := PolicySpec{Mode: ptr(ModeDetect), Timeout: ptr(Duration(100 * time.Millisecond))}
-	domain := PolicySpec{FailMode: ptr(FailClose)}
-	route := PolicySpec{Mode: ptr(ModeShadow), SamplingRate: ptr(0.5)}
+	fileDefaults := PolicySpec{Mode: new(ModeDetect), Timeout: ptr(Duration(100 * time.Millisecond))}
+	domain := PolicySpec{FailMode: new(FailClose)}
+	route := PolicySpec{Mode: new(ModeShadow), SamplingRate: new(0.5)}
 
 	got := Resolve(base, fileDefaults, domain, route)
 
@@ -47,8 +48,8 @@ func TestResolveSkipChecksUnion(t *testing.T) {
 }
 
 func TestMergeLaterFileWinsDefaults(t *testing.T) {
-	a := ParsedFile{Name: "a.yaml", File: &File{Spec: Spec{Defaults: PolicySpec{Mode: ptr(ModeBlock)}}}}
-	b := ParsedFile{Name: "b.yaml", File: &File{Spec: Spec{Defaults: PolicySpec{Mode: ptr(ModeDetect)}}}}
+	a := ParsedFile{Name: "a.yaml", File: &File{Spec: Spec{Defaults: PolicySpec{Mode: new(ModeBlock)}}}}
+	b := ParsedFile{Name: "b.yaml", File: &File{Spec: Spec{Defaults: PolicySpec{Mode: new(ModeDetect)}}}}
 	// Pass in non-sorted order to prove Merge sorts deterministically.
 	merged := Merge([]ParsedFile{b, a})
 	if merged.FileDefaults.Mode == nil || *merged.FileDefaults.Mode != ModeDetect {

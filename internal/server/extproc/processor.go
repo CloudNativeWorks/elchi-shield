@@ -636,8 +636,8 @@ func (pr *Processor) logDecision(ctx context.Context, tx *pipeline.Transaction, 
 // stripQuery removes the query string from a path so secrets carried in query
 // parameters (tokens, presigned URLs) never reach audit output.
 func stripQuery(path string) string {
-	if i := strings.IndexByte(path, '?'); i >= 0 {
-		return path[:i]
+	if before, _, ok := strings.Cut(path, "?"); ok {
+		return before
 	}
 	return path
 }
