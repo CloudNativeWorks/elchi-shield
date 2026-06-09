@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // knownMethods is the set of HTTP methods accepted in a route match.
@@ -212,10 +213,23 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 			for i, alg := range j.Algorithms {
 				if _, ok := knownJWTAlgs[alg]; !ok {
 					add(fmt.Sprintf("engines.jwt.algorithms[%d]", i), fmt.Errorf("unsupported or unsafe algorithm %q (alg=none is rejected)", alg))
+					continue
+				}
+				// The key source must match the algorithm family, or every valid
+				// token is silently rejected (a symmetric secret can't verify an
+				// RS*/ES* token and vice-versa).
+				isHS := strings.HasPrefix(alg, "HS")
+				if isHS && j.PublicKeyFile != "" && j.HMACSecret == "" {
+					add(fmt.Sprintf("engines.jwt.algorithms[%d]", i), fmt.Errorf("algorithm %q needs hmac_secret, but only public_key_file is set", alg))
+				}
+				if !isHS && j.HMACSecret != "" && j.PublicKeyFile == "" {
+					add(fmt.Sprintf("engines.jwt.algorithms[%d]", i), fmt.Errorf("algorithm %q needs public_key_file, but only hmac_secret is set", alg))
 				}
 			}
-			if j.Leeway.AsDuration() < 0 {
-				add("engines.jwt.leeway", fmt.Errorf("must be >= 0, got %s", j.Leeway.AsDuration()))
+			if l := j.Leeway.AsDuration(); l < 0 {
+				add("engines.jwt.leeway", fmt.Errorf("must be >= 0, got %s", l))
+			} else if l > 5*time.Minute {
+				add("engines.jwt.leeway", fmt.Errorf("must be <= 5m (sane clock-skew tolerance — a large leeway accepts long-expired tokens), got %s", l))
 			}
 		}
 		if c := s.Engines.Coraza; c != nil {

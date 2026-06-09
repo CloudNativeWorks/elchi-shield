@@ -7,9 +7,13 @@ package jwt
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -60,6 +64,12 @@ func New(cfg Config) (*Engine, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The loaded key type must match every configured algorithm family, or
+		// valid tokens are silently rejected at runtime (and a confused config
+		// goes unnoticed). Catch it loudly at load time.
+		if err := checkKeyAlgMatch(key, cfg.Algorithms); err != nil {
+			return nil, err
+		}
 		e.pubKey = key
 	}
 
@@ -100,9 +110,11 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	if !ok || strings.TrimSpace(raw) == "" {
 		return e.block("jwt.missing", "missing JWT in "+e.headerName), nil
 	}
+	// Strip a case-insensitive "Bearer " prefix (RFC 6750 schemes are
+	// case-insensitive), matching the JWKS engine.
 	token := raw
-	if after, found := strings.CutPrefix(raw, "Bearer "); found {
-		token = strings.TrimSpace(after)
+	if len(raw) >= 7 && strings.EqualFold(raw[:7], "Bearer ") {
+		token = strings.TrimSpace(raw[7:])
 	}
 
 	claims := gojwt.MapClaims{}
@@ -115,15 +127,41 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 
 	for _, name := range e.cfg.RequiredClaims {
 		v, present := claims[name]
-		if !present || v == nil || v == "" {
-			return e.block("jwt.missing_claim", "required claim missing: "+name), nil
+		if !present || isEmptyClaim(v) {
+			return e.block("jwt.missing_claim", "required claim missing or empty: "+name), nil
 		}
 	}
 	return decision.Verdict{}, nil
 }
 
-// keyFunc returns the verification key for the token's algorithm.
+// isEmptyClaim reports whether a claim value is "empty" for the required-claims
+// check: nil, an empty string, or an empty array/object. Meaningful zero values
+// (a numeric 0, a boolean false) are NOT treated as empty.
+func isEmptyClaim(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
+	default:
+		return false
+	}
+}
+
+// keyFunc returns the verification key for the token's algorithm. It gates the
+// key on the token's signing-method TYPE, which (with WithValidMethods) defeats
+// the RS256→HS256 algorithm-confusion attack: an HMAC token can only ever be
+// verified with the configured HMAC secret, never with an asymmetric public key.
 func (e *Engine) keyFunc(t *gojwt.Token) (any, error) {
+	// Defense in depth: WithValidMethods already rejects alg:none, but never hand
+	// back a key for the "none" method.
+	if t.Method == gojwt.SigningMethodNone {
+		return nil, errors.New("alg:none is not allowed")
+	}
 	switch t.Method.(type) {
 	case *gojwt.SigningMethodHMAC:
 		if len(e.cfg.HMACSecret) == 0 {
@@ -136,6 +174,26 @@ func (e *Engine) keyFunc(t *gojwt.Token) (any, error) {
 		}
 		return e.pubKey, nil
 	}
+}
+
+// checkKeyAlgMatch ensures every configured algorithm is verifiable with the
+// loaded public key type (RSA→RS*/PS*, ECDSA→ES*, Ed25519→EdDSA).
+func checkKeyAlgMatch(key any, algs []string) error {
+	for _, alg := range algs {
+		ok := false
+		switch key.(type) {
+		case *rsa.PublicKey:
+			ok = strings.HasPrefix(alg, "RS") || strings.HasPrefix(alg, "PS")
+		case *ecdsa.PublicKey:
+			ok = strings.HasPrefix(alg, "ES")
+		case ed25519.PublicKey:
+			ok = alg == "EdDSA"
+		}
+		if !ok {
+			return fmt.Errorf("jwt: algorithm %q does not match the configured public key type %T", alg, key)
+		}
+	}
+	return nil
 }
 
 func (e *Engine) block(ruleID, reason string) decision.Verdict {

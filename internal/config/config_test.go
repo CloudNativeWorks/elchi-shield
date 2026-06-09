@@ -355,3 +355,41 @@ spec:
 		}
 	}
 }
+
+func TestValidateJWTFootguns(t *testing.T) {
+	base := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - host: a.com
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              jwt:
+`
+	cases := map[string]struct{ frag, want string }{
+		"leeway too large": {
+			"                algorithms: [HS256]\n                hmac_secret: s\n                leeway: 24h\n",
+			"must be <= 5m",
+		},
+		"HS alg with public key only": {
+			"                algorithms: [HS256]\n                public_key_file: /tmp/k.pem\n",
+			"needs hmac_secret",
+		},
+		"RS alg with hmac secret only": {
+			"                algorithms: [RS256]\n                hmac_secret: s\n",
+			"needs public_key_file",
+		},
+	}
+	for name, tc := range cases {
+		dir := writeFiles(t, map[string]string{"a.yaml": base + tc.frag})
+		_, err := Load(dir)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, tc.want, err)
+		}
+	}
+}

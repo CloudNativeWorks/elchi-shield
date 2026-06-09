@@ -163,3 +163,46 @@ func BenchmarkJWTInspect(b *testing.B) {
 		_, _ = e.Inspect(context.Background(), r)
 	}
 }
+
+func TestRejectsAlgNoneToken(t *testing.T) {
+	e := newEngine(t)
+	// A real unsigned (alg:none) token must be rejected.
+	tok := gojwt.NewWithClaims(gojwt.SigningMethodNone, validClaims())
+	s, err := tok.SignedString(gojwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := inspect(t, e, req(hdr{"Authorization": "Bearer " + s})); v.RuleID != "jwt.invalid" {
+		t.Fatalf("alg:none token must be blocked, got %+v", v)
+	}
+}
+
+func TestBearerCaseInsensitive(t *testing.T) {
+	e := newEngine(t)
+	tok := token(t, validClaims())
+	for _, prefix := range []string{"Bearer ", "bearer ", "BEARER "} {
+		if v := inspect(t, e, req(hdr{"Authorization": prefix + tok})); v.Action == decision.Block {
+			t.Fatalf("a valid token with %q prefix should pass", prefix)
+		}
+	}
+}
+
+func TestRequiredClaimEmptyCollectionRejected(t *testing.T) {
+	e, err := New(Config{Algorithms: []string{"HS256"}, HMACSecret: secret, RequiredClaims: []string{"roles"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, empty := range []any{[]any{}, "", map[string]any{}, nil} {
+		c := validClaims()
+		c["roles"] = empty
+		if v := inspect(t, e, req(hdr{"Authorization": "Bearer " + token(t, c)})); v.RuleID != "jwt.missing_claim" {
+			t.Fatalf("empty required claim %#v should be rejected, got %+v", empty, v)
+		}
+	}
+	// A meaningful value passes.
+	c := validClaims()
+	c["roles"] = []any{"admin"}
+	if v := inspect(t, e, req(hdr{"Authorization": "Bearer " + token(t, c)})); v.Action == decision.Block {
+		t.Fatal("a non-empty required claim should pass")
+	}
+}
