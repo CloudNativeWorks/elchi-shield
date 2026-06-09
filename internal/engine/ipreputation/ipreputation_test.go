@@ -195,6 +195,20 @@ func TestGeoAllowCountryDefaultDeny(t *testing.T) {
 	}
 }
 
+func TestGeoAllowCountryUnknownDenied(t *testing.T) {
+	// A country allow-list is configured but only the ASN DB is present, so a
+	// lookup resolves an ASN with no country. The unknown-country IP must NOT
+	// bypass the allow-list (it used to fall through to allow).
+	e, err := New(Config{Geo: &GeoConfig{ASNDBFile: asnDB, AllowCountries: []string{"SE"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close() //nolint:errcheck
+	if v := mustInspect(t, e, "1.128.0.1"); v.RuleID != "ipreputation.geo_country:unknown" {
+		t.Fatalf("unknown-country IP must be denied under a country allow-list, got %+v", v)
+	}
+}
+
 func TestGeoBlockASN(t *testing.T) {
 	e, err := New(Config{Geo: &GeoConfig{ASNDBFile: asnDB, BlockASNs: []uint{1221}}})
 	if err != nil {

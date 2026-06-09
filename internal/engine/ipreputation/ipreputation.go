@@ -253,6 +253,12 @@ func (g *geoMatch) inspect(ip netip.Addr) (decision.Verdict, bool) {
 				return block("ipreputation.geo_country:"+rec.Country, "source country not allowed: "+rec.Country, decision.SeverityMedium), true
 			}
 		}
+	} else if g.hasAllow {
+		// A country allow-list is configured but this record has no country (an
+		// ASN-only DB hit reaches here, since the all-missing case returned above).
+		// Default-deny: an IP whose country can't be confirmed is not on the
+		// allow-list, so it must not slip through the positive-security control.
+		return block("ipreputation.geo_country:unknown", "source country unknown, not in allow-list", decision.SeverityMedium), true
 	}
 	if rec.ASN != 0 {
 		if _, deny := g.blockASNs[rec.ASN]; deny {
