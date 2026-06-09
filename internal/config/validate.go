@@ -251,9 +251,7 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 			}
 		}
 		if c := s.Engines.Coraza; c != nil {
-			if c.Directives == "" && c.DirectivesFile == "" && !c.IncludeOWASP {
-				add("engines.coraza", errors.New("directives, directives_file, or include_owasp is required"))
-			}
+			validateCoraza(c, add)
 		}
 		if rl := s.Engines.RateLimit; rl != nil {
 			if rl.RequestsPerSecond <= 0 {
@@ -307,6 +305,42 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 		}
 	}
 	return errs
+}
+
+// crsMaxParanoia is the highest OWASP CRS paranoia level (1=baseline .. 4=strict).
+const crsMaxParanoia = 4
+
+// validateCoraza checks the Coraza WAF config: a rule source is required, and the
+// CRS tuning knobs (only meaningful with include_owasp) must be in range.
+func validateCoraza(c *CorazaSpec, add func(field string, err error)) {
+	if c.Directives == "" && c.DirectivesFile == "" && !c.IncludeOWASP {
+		add("engines.coraza", errors.New("directives, directives_file, or include_owasp is required"))
+	}
+	tuned := c.ParanoiaLevel != 0 || c.DetectionParanoiaLevel != 0 ||
+		c.InboundAnomalyThreshold != 0 || c.OutboundAnomalyThreshold != 0
+	// The CRS knobs only take effect when the CRS is loaded; setting them without
+	// include_owasp is a silent no-op the operator almost certainly didn't intend.
+	if tuned && !c.IncludeOWASP {
+		add("engines.coraza", errors.New("paranoia_level/detection_paranoia_level/inbound_anomaly_threshold/outbound_anomaly_threshold require include_owasp: true (they tune the OWASP CRS)"))
+	}
+	checkPL := func(field string, v int) {
+		if v < 0 || v > crsMaxParanoia {
+			add(field, fmt.Errorf("must be within [1,%d] (0 = CRS default), got %d", crsMaxParanoia, v))
+		}
+	}
+	checkPL("engines.coraza.paranoia_level", c.ParanoiaLevel)
+	checkPL("engines.coraza.detection_paranoia_level", c.DetectionParanoiaLevel)
+	// CRS requires detection >= blocking; a lower detection level is rejected by the
+	// rules at runtime, so catch it at config load with an attributed error.
+	if c.DetectionParanoiaLevel != 0 && c.ParanoiaLevel != 0 && c.DetectionParanoiaLevel < c.ParanoiaLevel {
+		add("engines.coraza.detection_paranoia_level", fmt.Errorf("must be >= paranoia_level (%d), got %d", c.ParanoiaLevel, c.DetectionParanoiaLevel))
+	}
+	if c.InboundAnomalyThreshold < 0 {
+		add("engines.coraza.inbound_anomaly_threshold", errors.New("must be >= 0 (0 = CRS default 5)"))
+	}
+	if c.OutboundAnomalyThreshold < 0 {
+		add("engines.coraza.outbound_anomaly_threshold", errors.New("must be >= 0 (0 = CRS default 4)"))
+	}
 }
 
 // knownDLPKinds is the set of sensitive-data kinds the detector can produce.

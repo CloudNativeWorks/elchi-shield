@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
 	czrules "github.com/corazawaf/coraza/v3"
 	cztypes "github.com/corazawaf/coraza/v3/types"
 
@@ -42,29 +43,86 @@ type wafEngine struct {
 }
 
 func newEngine(cfg engine.CorazaConfig) (*wafEngine, error) {
-	// include_owasp is not supported by this adapter (the OWASP CRS is not
-	// bundled). Fail loudly rather than silently running a WAF with no rules,
-	// which would be a fail-open security control.
-	if cfg.IncludeOWASP {
-		return nil, errors.New("coraza: include_owasp is not supported by this build; provide directives or directives_file with explicit rules")
-	}
+	wafCfg := czrules.NewWAFConfig()
 	var b strings.Builder
-	if cfg.Directives == "" {
-		b.WriteString("SecRuleEngine On")
-	} else {
+
+	if cfg.IncludeOWASP {
+		// The OWASP Core Rule Set is embedded in the binary via the
+		// coraza-coreruleset module (an io/fs.FS holding @coraza.conf-recommended,
+		// @crs-setup.conf.example, and @owasp_crs/*). Point Coraza at that RootFS so
+		// the Include directives resolve from memory — no files to ship.
+		wafCfg = wafCfg.WithRootFS(coreruleset.FS)
+		// Recommended Coraza base (SecRuleEngine On, body access, limits) then the
+		// CRS setup. crs-setup.conf.example leaves paranoia/thresholds commented, so
+		// CRS uses its built-in defaults (PL1, inbound 5, outbound 4) unless we
+		// override them below — BEFORE the rules load, so REQUEST-901-INITIALIZATION
+		// sees them already set and skips its defaults.
+		b.WriteString("Include @coraza.conf-recommended\n")
+		// @coraza.conf-recommended ships SecRuleEngine DetectionOnly (a safe default
+		// for a standalone WAF). Force it On so the CRS blocking-evaluation rule
+		// actually raises an interruption — shield expresses detect/shadow/off via
+		// the policy mode (the executor maps a Block verdict accordingly), so the
+		// engine itself must always be enforcing.
+		b.WriteString("SecRuleEngine On\n")
+		b.WriteString("Include @crs-setup.conf.example\n")
+		writeCRSTuning(&b, cfg)
+		b.WriteString("Include @owasp_crs/*.conf\n")
+	} else if cfg.Directives == "" {
+		// No CRS and no explicit rules would be a fail-open WAF; refuse it. (The
+		// config layer already enforces this, but defend the engine boundary too.
+		// directives_file is folded into Directives by the builder before we see it.)
+		return nil, errors.New("coraza: no rules configured (set directives, directives_file, or include_owasp)")
+	}
+
+	// User directives (inline + directives_file, already concatenated by the
+	// builder) run AFTER the CRS so an operator can tune/override it. Rule
+	// removals run last so they can drop CRS rules by id.
+	if cfg.Directives != "" {
 		b.WriteString(cfg.Directives)
+		b.WriteString("\n")
 	}
 	for _, id := range cfg.ExcludeRuleIDs {
-		b.WriteString("\nSecRuleRemoveById ")
+		b.WriteString("SecRuleRemoveById ")
 		b.WriteString(id)
+		b.WriteString("\n")
 	}
-	waf, err := czrules.NewWAF(czrules.NewWAFConfig().WithDirectives(b.String()))
+
+	waf, err := czrules.NewWAF(wafCfg.WithDirectives(b.String()))
 	if err != nil {
 		return nil, fmt.Errorf("coraza: build waf: %w", err)
 	}
 	e := &wafEngine{}
 	e.waf.Store(&wafHolder{waf: waf})
 	return e, nil
+}
+
+// writeCRSTuning emits a single phase-1 SecAction that overrides the CRS
+// collaborative-scoring knobs the operator set (a zero value leaves the CRS
+// default in place). It must be included after @crs-setup but before the rules.
+func writeCRSTuning(b *strings.Builder, cfg engine.CorazaConfig) {
+	var sv []string
+	if cfg.ParanoiaLevel > 0 {
+		sv = append(sv, fmt.Sprintf("setvar:tx.blocking_paranoia_level=%d", cfg.ParanoiaLevel))
+	}
+	// Detection PL defaults to the blocking PL (CRS convention); only emit it when
+	// the operator wants a higher detection level than they block on.
+	if dpl := cfg.DetectionParanoiaLevel; dpl > 0 {
+		sv = append(sv, fmt.Sprintf("setvar:tx.detection_paranoia_level=%d", dpl))
+	} else if cfg.ParanoiaLevel > 0 {
+		sv = append(sv, fmt.Sprintf("setvar:tx.detection_paranoia_level=%d", cfg.ParanoiaLevel))
+	}
+	if cfg.InboundAnomalyThreshold > 0 {
+		sv = append(sv, fmt.Sprintf("setvar:tx.inbound_anomaly_score_threshold=%d", cfg.InboundAnomalyThreshold))
+	}
+	if cfg.OutboundAnomalyThreshold > 0 {
+		sv = append(sv, fmt.Sprintf("setvar:tx.outbound_anomaly_score_threshold=%d", cfg.OutboundAnomalyThreshold))
+	}
+	if len(sv) == 0 {
+		return
+	}
+	b.WriteString(`SecAction "id:900000,phase:1,nolog,pass,t:none,`)
+	b.WriteString(strings.Join(sv, ","))
+	b.WriteString("\"\n")
 }
 
 func (*wafEngine) Name() string       { return "coraza" }

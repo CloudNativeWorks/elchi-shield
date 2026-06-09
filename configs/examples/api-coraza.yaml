@@ -1,0 +1,80 @@
+# Example policies using the Coraza WAF engine with the OWASP Core Rule Set.
+#
+# REQUIRES a binary built with the `coraza` build tag:
+#   go build -tags coraza ./cmd/elchi-shield
+# On the lean (default) binary a policy that configures engines.coraza fails the
+# config reload with an attributed error and the last-good snapshot stays active.
+#
+# The OWASP CRS is EMBEDDED in the binary (no rule files to ship): `include_owasp:
+# true` loads it from memory. Coraza always runs in enforcing mode internally and
+# returns a block verdict; whether that verdict actually blocks is governed by the
+# shield policy `mode` (block | detect | shadow | off), so you can roll the CRS out
+# in `detect` first and watch detections_total before switching to `block`.
+#
+# Coraza is a BODY-phase engine: a route using it buffers the request (and, for the
+# response-side CRS rules, the response) body up to the policy size caps.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: api-coraza
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open          # a WAF bug must never blackhole traffic
+    inspect_request_body: true
+    max_request_body_bytes: 1048576   # 1 MiB
+
+  domains:
+    - hosts: ["app.example.com"]
+      routes:
+        # Full OWASP CRS at the default paranoia level (PL1) and default anomaly
+        # thresholds (inbound 5 / outbound 4). Start in detect, then switch to block.
+        - match:
+            path_prefix: "/api/"
+          policy:
+            mode: detect
+            engines:
+              coraza:
+                include_owasp: true
+
+        # Stricter posture for the admin surface: paranoia level 2 and a tighter
+        # inbound anomaly threshold (blocks on a lower accumulated score). Drop two
+        # noisy rules by id. Response-side CRS rules also run, so inspect the body.
+        - match:
+            path_prefix: "/admin/"
+          policy:
+            mode: block
+            inspect_response_body: true
+            max_response_body_bytes: 1048576
+            engines:
+              coraza:
+                include_owasp: true
+                paranoia_level: 2              # 1..4 (0 = CRS default 1)
+                detection_paranoia_level: 3    # run PL3 rules in detect, block at PL2
+                inbound_anomaly_threshold: 3   # 0 = CRS default 5 (lower = stricter)
+                outbound_anomaly_threshold: 4  # 0 = CRS default 4
+                exclude_rule_ids: ["920350", "942100"]
+
+        # CRS plus your own custom SecLang. directives/directives_file run AFTER the
+        # CRS so they can add or override rules; exclude_rule_ids removals run last.
+        - match:
+            path_prefix: "/upload/"
+          policy:
+            mode: block
+            engines:
+              coraza:
+                include_owasp: true
+                directives: |
+                  SecRule REQUEST_HEADERS:Content-Type "@rx ^multipart/form-data" \
+                    "id:100001,phase:1,pass,nolog,ctl:requestBodyProcessor=MULTIPART"
+
+    # A domain that uses ONLY custom rules (no CRS) — directives_file points at a
+    # SecLang file the management plane writes into the watched config dir.
+    - hosts: ["legacy.example.com"]
+      routes:
+        - match: {}
+          policy:
+            mode: block
+            engines:
+              coraza:
+                directives_file: "/etc/elchi/elchi-shield/coraza/legacy.conf"

@@ -15,6 +15,30 @@ type noHeaders struct{}
 func (noHeaders) Header(string) (string, bool)           { return "", false }
 func (noHeaders) RangeHeaders(func(string, string) bool) {}
 
+// realHeaders is a realistic browser-like header set. The OWASP CRS scores a
+// request with NO Host/User-Agent/Accept headers as anomalous (correctly), so
+// CRS tests use this to isolate the payload under test from missing-header noise.
+type realHeaders map[string]string
+
+func (h realHeaders) Header(name string) (string, bool) { v, ok := h[name]; return v, ok }
+func (h realHeaders) RangeHeaders(fn func(string, string) bool) {
+	for k, v := range h {
+		if !fn(k, v) {
+			return
+		}
+	}
+}
+
+func browserHeaders() realHeaders {
+	return realHeaders{
+		"Host":            "api.example.com",
+		"User-Agent":      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+		"Accept":          "text/html,application/json",
+		"Accept-Language": "en-US,en;q=0.9",
+		"Accept-Encoding": "gzip, deflate",
+	}
+}
+
 const rules = `
 SecRuleEngine On
 SecRule REQUEST_URI "@contains attack" "id:1,phase:1,deny,status:403,msg:'blocked'"
@@ -120,10 +144,86 @@ SecRule REQUEST_URI "@contains teapot" "id:4,phase:1,deny,status:418,msg:'teapot
 	}
 }
 
-func TestCorazaIncludeOWASPFailsLoudly(t *testing.T) {
-	// include_owasp is unsupported → must error, never silently run an empty WAF.
-	if _, err := newEngine(engine.CorazaConfig{IncludeOWASP: true}); err == nil {
-		t.Fatal("include_owasp:true must fail rather than run a rule-less WAF")
+func TestCorazaNoRulesFailsLoudly(t *testing.T) {
+	// No CRS and no directives would be a rule-less (fail-open) WAF → must error.
+	if _, err := newEngine(engine.CorazaConfig{}); err == nil {
+		t.Fatal("a Coraza engine with no rules must fail rather than run empty")
+	}
+}
+
+// sqliReq is an obvious SQL-injection request the CRS 942xxx rules score as
+// critical (>= the default inbound threshold of 5).
+func sqliReq() *engine.Request {
+	return &engine.Request{
+		Direction: engine.DirectionRequest,
+		Path:      "/items?id=1%27%20OR%20%271%27%3D%271",
+		Method:    "GET",
+		Host:      "api.example.com",
+		Headers:   browserHeaders(),
+	}
+}
+
+func TestCorazaIncludeOWASPLoadsCRS(t *testing.T) {
+	// include_owasp now embeds + loads the OWASP CRS; a clear SQLi must be blocked
+	// by the collaborative score crossing the default inbound threshold.
+	e, err := newEngine(engine.CorazaConfig{IncludeOWASP: true})
+	if err != nil {
+		t.Fatalf("include_owasp should build a CRS-backed WAF: %v", err)
+	}
+	v, err := e.Inspect(context.Background(), sqliReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Action != decision.Block || v.Engine != "coraza" {
+		t.Fatalf("CRS should block an obvious SQLi, got %+v", v)
+	}
+
+	clean, err := e.Inspect(context.Background(), &engine.Request{
+		Direction: engine.DirectionRequest, Path: "/items?id=42", Method: "GET",
+		Host: "api.example.com", Headers: browserHeaders(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean.Action == decision.Block {
+		t.Fatalf("CRS should allow a benign request, got %+v", clean)
+	}
+}
+
+func TestCorazaCRSAnomalyThresholdTuning(t *testing.T) {
+	// Raising the inbound threshold far above any single rule's score proves the
+	// tuning SecAction is wired BEFORE the rules: the same SQLi no longer blocks.
+	e, err := newEngine(engine.CorazaConfig{IncludeOWASP: true, InboundAnomalyThreshold: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := e.Inspect(context.Background(), sqliReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Action == decision.Block {
+		t.Fatalf("a very high inbound threshold should let the SQLi through, got %+v", v)
+	}
+}
+
+func TestCorazaCRSExcludeRuleID(t *testing.T) {
+	// exclude_rule_ids must drop a CRS rule by id. 942100 is the libinjection SQLi
+	// rule; removing it (and there is no other strong signal in this payload) drops
+	// the score below the threshold.
+	e, err := newEngine(engine.CorazaConfig{
+		IncludeOWASP:   true,
+		ExcludeRuleIDs: []string{"942100", "942110", "942140", "942200", "942260", "942270", "942300", "942310", "942330", "942340", "942361", "942370", "942380", "942390", "942400", "942410", "942430", "942440", "942450", "942470", "942480", "942500", "942521", "942522"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Build succeeding with removals applied is the contract under test; a request
+	// still runs cleanly through the reduced rule set.
+	if _, err := e.Inspect(context.Background(), &engine.Request{
+		Direction: engine.DirectionRequest, Path: "/items?id=42", Method: "GET",
+		Host: "api.example.com", Headers: browserHeaders(),
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

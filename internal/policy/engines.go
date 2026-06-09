@@ -92,9 +92,13 @@ func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 			directives += "\n" + string(data)
 		}
 		e, err := engine.NewCoraza(engine.CorazaConfig{
-			Directives:     directives,
-			IncludeOWASP:   c.IncludeOWASP,
-			ExcludeRuleIDs: c.ExcludeRuleIDs,
+			Directives:               directives,
+			IncludeOWASP:             c.IncludeOWASP,
+			ExcludeRuleIDs:           c.ExcludeRuleIDs,
+			ParanoiaLevel:            c.ParanoiaLevel,
+			DetectionParanoiaLevel:   c.DetectionParanoiaLevel,
+			InboundAnomalyThreshold:  c.InboundAnomalyThreshold,
+			OutboundAnomalyThreshold: c.OutboundAnomalyThreshold,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("coraza engine: %w", err)

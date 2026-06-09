@@ -465,12 +465,21 @@ type JWTSpec struct {
 }
 
 // CorazaSpec configures the Coraza WAF engine (only usable in a binary built
-// with the `coraza` build tag).
+// with the `coraza` build tag). `include_owasp` loads the OWASP Core Rule Set,
+// which is embedded in the binary — no rule files need to be shipped.
 type CorazaSpec struct {
 	Directives     string   `yaml:"directives" json:"directives"`
 	DirectivesFile string   `yaml:"directives_file" json:"directives_file"`
 	IncludeOWASP   bool     `yaml:"include_owasp" json:"include_owasp"`
 	ExcludeRuleIDs []string `yaml:"exclude_rule_ids" json:"exclude_rule_ids"`
+
+	// CRS tuning (only meaningful with include_owasp). A zero value uses the CRS
+	// default (paranoia 1, inbound threshold 5, outbound threshold 4). Lower
+	// thresholds and higher paranoia block more aggressively (more false positives).
+	ParanoiaLevel            int `yaml:"paranoia_level" json:"paranoia_level"`
+	DetectionParanoiaLevel   int `yaml:"detection_paranoia_level" json:"detection_paranoia_level"`
+	InboundAnomalyThreshold  int `yaml:"inbound_anomaly_threshold" json:"inbound_anomaly_threshold"`
+	OutboundAnomalyThreshold int `yaml:"outbound_anomaly_threshold" json:"outbound_anomaly_threshold"`
 }
 
 // Checks groups the built-in check configuration consumed by the engine.

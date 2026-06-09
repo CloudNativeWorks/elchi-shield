@@ -6,8 +6,15 @@ package engine
 // of the default build.
 type CorazaConfig struct {
 	Directives     string   // inline SecLang directives
-	IncludeOWASP   bool     // load the OWASP CRS (adapter-provided)
+	IncludeOWASP   bool     // load the embedded OWASP CRS (adapter-provided)
 	ExcludeRuleIDs []string // rule IDs to disable
+
+	// CRS collaborative-scoring tuning. Only applied when IncludeOWASP is true; a
+	// zero value leaves the CRS default in place (PL1, inbound 5, outbound 4).
+	ParanoiaLevel            int // blocking paranoia level 1..4
+	DetectionParanoiaLevel   int // detection paranoia level (>= blocking); 0 = same as blocking
+	InboundAnomalyThreshold  int // request-side anomaly score that blocks
+	OutboundAnomalyThreshold int // response-side anomaly score that blocks
 }
 
 // corazaFactory is set by the build-tagged adapter's init().

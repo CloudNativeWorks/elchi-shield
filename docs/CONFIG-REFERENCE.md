@@ -430,17 +430,33 @@ Built-in. Header-phase. Validates a bearer JWT against a **JWK Set**.
 ---
 
 ### Engine: `coraza` **(build tag: `coraza`)**
-Body-phase WAF (OWASP CRS-compatible).
+Body-phase WAF. The **OWASP Core Rule Set is embedded in the binary** — set
+`include_owasp: true` to load it from memory (no rule files to ship).
 
 | Field | Type | Required | Default | Purpose |
 |---|---|---|---|---|
-| `directives` | string | one-of | — | Inline SecLang directives. |
-| `directives_file` | string | one-of | — | Path to a SecLang file. |
-| `include_owasp` | bool | one-of | `false` | Bundle the OWASP Core Rule Set. |
-| `exclude_rule_ids` | string[] | no | — | Rule IDs to disable. |
+| `directives` | string | one-of | — | Inline SecLang directives (run **after** the CRS so they can add/override rules). |
+| `directives_file` | string | one-of | — | Path to a SecLang file (concatenated into `directives`). |
+| `include_owasp` | bool | one-of | `false` | Load the embedded OWASP Core Rule Set. |
+| `exclude_rule_ids` | string[] | no | — | CRS/custom rule IDs to disable (`SecRuleRemoveById`, applied last). |
+| `paranoia_level` | int | no | `0` → CRS default (1) | CRS **blocking** paranoia level `1`–`4` (higher = stricter, more false positives). |
+| `detection_paranoia_level` | int | no | `0` → = `paranoia_level` | Run rules up to this PL in **detection** but only block at `paranoia_level`. Must be `≥ paranoia_level`. |
+| `inbound_anomaly_threshold` | int | no | `0` → CRS default (5) | Request-side collaborative score that triggers a block (lower = stricter). |
+| `outbound_anomaly_threshold` | int | no | `0` → CRS default (4) | Response-side score that triggers a block. |
 
-**Rule:** at least one of `directives` / `directives_file` / `include_owasp`.
-This engine inspects **both** request and response.
+**Rules:**
+- At least one of `directives` / `directives_file` / `include_owasp`.
+- The CRS tuning fields (`paranoia_level`, `detection_paranoia_level`,
+  `inbound_anomaly_threshold`, `outbound_anomaly_threshold`) **require
+  `include_owasp: true`** — they tune the CRS and are a no-op otherwise (rejected
+  at load). PL values are `1`–`4` (`0` = use CRS default); thresholds are `≥ 0`.
+- This engine inspects **both** request and response.
+
+**Enforcement note:** Coraza always runs in enforcing mode internally (shield
+forces `SecRuleEngine On`, overriding the CRS recommended `DetectionOnly`); a CRS
+hit returns a block verdict and the shield policy `mode` (`block`/`detect`/
+`shadow`/`off`) decides whether it actually blocks. Roll out with `mode: detect`,
+watch `detections_total`, then switch to `block`.
 
 ---
 

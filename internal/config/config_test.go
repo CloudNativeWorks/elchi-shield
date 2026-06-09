@@ -355,6 +355,80 @@ spec:
 	}
 }
 
+func TestValidateCorazaFootguns(t *testing.T) {
+	base := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - hosts: ["a.com"]
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              coraza:
+`
+	cases := map[string]struct{ frag, want string }{
+		"no rule source": {
+			"                exclude_rule_ids: [\"942100\"]\n",
+			"directives, directives_file, or include_owasp is required",
+		},
+		"tuning without include_owasp": {
+			"                directives: \"SecRuleEngine On\"\n                paranoia_level: 2\n",
+			"require include_owasp",
+		},
+		"paranoia out of range": {
+			"                include_owasp: true\n                paranoia_level: 5\n",
+			"within [1,4]",
+		},
+		"detection below blocking": {
+			"                include_owasp: true\n                paranoia_level: 3\n                detection_paranoia_level: 2\n",
+			"must be >= paranoia_level",
+		},
+		"negative inbound threshold": {
+			"                include_owasp: true\n                inbound_anomaly_threshold: -1\n",
+			"must be >= 0",
+		},
+	}
+	for name, tc := range cases {
+		dir := writeFiles(t, map[string]string{"a.yaml": base + tc.frag})
+		_, err := Load(dir)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, tc.want, err)
+		}
+	}
+}
+
+// TestValidateCorazaTuningAccepted confirms a valid include_owasp + tuning passes
+// config validation (engine build happens only under the `coraza` tag).
+func TestValidateCorazaTuningAccepted(t *testing.T) {
+	doc := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - hosts: ["a.com"]
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              coraza:
+                include_owasp: true
+                paranoia_level: 2
+                detection_paranoia_level: 3
+                inbound_anomaly_threshold: 10
+                outbound_anomaly_threshold: 8
+                exclude_rule_ids: ["920350"]
+`
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": doc})); err != nil {
+		t.Fatalf("valid coraza CRS tuning should pass validation, got %v", err)
+	}
+}
+
 func TestValidateBotFootguns(t *testing.T) {
 	base := `
 apiVersion: sentinel.elchi.io/v1
