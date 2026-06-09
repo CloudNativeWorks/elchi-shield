@@ -91,7 +91,12 @@ func (e *wafEngine) Inspect(_ context.Context, req *engine.Request) (decision.Ve
 		return decision.Verdict{}, errClosed
 	}
 	tx := h.waf.NewTransaction()
-	defer func() { _ = tx.Close() }()
+	// ProcessLogging runs the phase-5 (logging) rules and finalizes the audit
+	// accounting; Coraza's documented teardown is ProcessLogging then Close.
+	defer func() {
+		tx.ProcessLogging()
+		_ = tx.Close()
+	}()
 
 	if req.Direction == engine.DirectionResponse {
 		return e.inspectResponse(tx, req)
@@ -100,11 +105,18 @@ func (e *wafEngine) Inspect(_ context.Context, req *engine.Request) (decision.Ve
 }
 
 func (e *wafEngine) inspectRequest(tx cztypes.Transaction, req *engine.Request) (decision.Verdict, error) {
+	// ProcessConnection populates REMOTE_ADDR from the trusted, pre-derived client
+	// IP so IP-keyed rules (and the audit log) evaluate against the real source
+	// rather than an empty address. ProcessURI must precede the header phase.
+	tx.ProcessConnection(req.SourceIP, 0, "", 0)
+	tx.ProcessURI(req.Path, req.Method, "HTTP/1.1")
 	req.Headers.RangeHeaders(func(name, value string) bool {
 		tx.AddRequestHeader(name, value)
 		return true
 	})
-	tx.ProcessURI(req.Path, req.Method, "HTTP/1.1")
+	// SetServerName must run before ProcessRequestHeaders for SERVER_NAME-keyed
+	// rules to see the host in phase 1.
+	tx.SetServerName(req.Host)
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		return verdict(it), nil
 	}
@@ -130,6 +142,11 @@ func (e *wafEngine) inspectRequest(tx cztypes.Transaction, req *engine.Request) 
 }
 
 func (e *wafEngine) inspectResponse(tx cztypes.Transaction, req *engine.Request) (decision.Verdict, error) {
+	// REMOTE_ADDR / SERVER_NAME are still wanted on the response path (IP- and
+	// host-keyed response rules, audit log). Request-phase variables are absent by
+	// design — request and response are separate pipelines/transactions here.
+	tx.ProcessConnection(req.SourceIP, 0, "", 0)
+	tx.SetServerName(req.Host)
 	req.Headers.RangeHeaders(func(name, value string) bool {
 		tx.AddResponseHeader(name, value)
 		return true
@@ -166,11 +183,19 @@ func (e *wafEngine) inspectResponse(tx cztypes.Transaction, req *engine.Request)
 }
 
 func verdict(it *cztypes.Interruption) decision.Verdict {
+	// Honor the status the WAF rule forces (e.g. a custom status:N or
+	// SecDefaultAction); an out-of-range/zero value falls back to the default
+	// block status (403) downstream.
+	status := it.Status
+	if status < 100 || status > 599 {
+		status = 0
+	}
 	return decision.Verdict{
-		Action:   decision.Block,
-		Reason:   fmt.Sprintf("coraza rule %d (%s)", it.RuleID, it.Action),
-		RuleID:   strconv.Itoa(it.RuleID),
-		Engine:   "coraza",
-		Severity: decision.SeverityHigh,
+		Action:     decision.Block,
+		Reason:     fmt.Sprintf("coraza rule %d (%s)", it.RuleID, it.Action),
+		RuleID:     strconv.Itoa(it.RuleID),
+		Engine:     "coraza",
+		Severity:   decision.SeverityHigh,
+		StatusCode: status,
 	}
 }
