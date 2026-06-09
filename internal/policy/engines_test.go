@@ -106,9 +106,13 @@ func TestResolverCloseClosesSharedSetOnce(t *testing.T) {
 	}
 }
 
-func TestCompileCorazaNotBuiltErrors(t *testing.T) {
-	if corazaBuilt() {
-		t.Skip("coraza adapter is built in")
+func TestCompileCorazaUnregisteredErrors(t *testing.T) {
+	// In the real binary the Coraza adapter is always linked, so a coraza policy
+	// compiles. This policy-package test binary doesn't import the adapter, so the
+	// factory is unregistered — compiling a coraza policy must fail cleanly
+	// (attributed reload error), never panic.
+	if corazaRegistered() {
+		t.Skip("coraza adapter is registered in this test binary")
 	}
 	cfg := merged(config.Domain{
 		Hosts: []string{"a.com"},
@@ -118,11 +122,11 @@ func TestCompileCorazaNotBuiltErrors(t *testing.T) {
 	})
 	_, err := Compile(cfg)
 	if err == nil || !strings.Contains(err.Error(), "coraza") {
-		t.Fatalf("coraza without build tag should fail compile: %v", err)
+		t.Fatalf("an unregistered coraza adapter should fail compile cleanly: %v", err)
 	}
 }
 
-func corazaBuilt() bool {
+func corazaRegistered() bool {
 	_, err := engine.NewCoraza(engine.CorazaConfig{IncludeOWASP: true})
 	return err == nil
 }

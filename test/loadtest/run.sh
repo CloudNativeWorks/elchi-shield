@@ -7,7 +7,7 @@
 #   - header-only enforced          → the common hot path (no body buffering)
 #   - body-inspecting               → BUFFERED mode_override + body buffering
 #
-# Lean binary (no build tags) so numbers reflect the production default image.
+# Single full binary (no build tags) so numbers reflect the production image.
 # Needs: go, curl, and a real Envoy (auto-fetched via func-e, or ENVOY=...).
 #
 # Tunables: DURATION (per scenario, default 10s), CONNS (default 64), WARMUP (1s).
@@ -22,7 +22,7 @@ DURATION="${DURATION:-10s}"
 CONNS="${CONNS:-64}"
 WARMUP="${WARMUP:-1s}"
 
-echo "building (lean binary, no build tags) ..."
+echo "building (single full binary, no build tags) ..."
 ( cd "$ROOT" && go build -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
 go build -o "$DIR/echo.bin" "$E2E/echo" || { echo "echo build failed"; exit 1; }
 go build -o "$DIR/driver.bin" "$DIR/driver" || { echo "driver build failed"; exit 1; }

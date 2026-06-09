@@ -1,5 +1,3 @@
-//go:build coraza
-
 package coraza
 
 import (
@@ -230,7 +228,7 @@ func TestCorazaCRSExcludeRuleID(t *testing.T) {
 func TestCorazaRegistered(t *testing.T) {
 	e, err := engine.NewCoraza(engine.CorazaConfig{Directives: "SecRuleEngine On"})
 	if err != nil {
-		t.Fatalf("coraza factory should be registered under the build tag: %v", err)
+		t.Fatalf("coraza factory should be registered via the adapter's init(): %v", err)
 	}
 	if e.Name() != "coraza" {
 		t.Fatalf("name: %s", e.Name())

@@ -14,27 +14,22 @@ env:
 jobs:
   build-test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # The default (lean) binary AND the full build-tagged binary must both
-        # compile and pass — the heavy deps (Coraza/ClickHouse/OTEL) are tagged
-        # out of the default binary on purpose.
-        tags: ["", "coraza clickhouse otel httpsig openapi"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
+      # Single full binary — every engine (incl. the Coraza WAF) and audit sink is
+      # compiled in; there are no build tags.
       - name: vet
-        run: go vet -tags "${{ matrix.tags }}" ./...
+        run: go vet ./...
       - name: build
-        run: go build -tags "${{ matrix.tags }}" ./...
+        run: go build ./...
       - name: test
-        run: go test -tags "${{ matrix.tags }}" ./...
+        run: go test ./...
       - name: test -race
-        run: go test -race -tags "${{ matrix.tags }}" ./...
+        run: go test -race ./...
 
   lint:
     runs-on: ubuntu-latest
@@ -49,7 +44,6 @@ jobs:
           # golangci-lint v2 (the .golangci.yml uses `version: "2"` and the repo
           # is on go 1.26 — v1 binaries can't load either). Pin to match local.
           version: v2.12.2
-          args: --build-tags "coraza clickhouse otel httpsig openapi"
 
   vuln:
     runs-on: ubuntu-latest

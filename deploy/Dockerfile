@@ -5,13 +5,9 @@
 # release pipeline instead bundles a prebuilt binary via Dockerfile-release-binary
 # (no Go toolchain), reusing the exact artifact attached to the GitHub Release.
 #
-# The default image is the LEAN binary (no Coraza/ClickHouse/OTEL): ~16 MB. To
-# include the WAF / remote sinks, pass their build tags, e.g.:
-#   docker build -f deploy/Dockerfile --build-arg TAGS="coraza" -t elchi-shield:coraza .
-#   docker build -f deploy/Dockerfile --build-arg TAGS="coraza clickhouse otel" .
-#
-# The binary is fully static (CGO disabled) even with every heavy tag, so the
-# distroless static base (no libc) is sufficient.
+# The image is a single full binary — every engine (incl. the Coraza WAF with the
+# embedded OWASP CRS) and audit sink (ClickHouse/OTEL) is compiled in. The binary
+# is fully static (CGO disabled), so the distroless static base (no libc) suffices.
 
 FROM golang:1.26 AS build
 WORKDIR /src
@@ -22,13 +18,11 @@ RUN go mod download
 
 COPY . .
 
-ARG TAGS=""
 ARG APP_VERSION=dev
 ARG COMMIT=""
 RUN CGO_ENABLED=0 go build \
         -trimpath \
         -buildvcs=true \
-        -tags "${TAGS}" \
         -ldflags "-s -w -X main.version=${APP_VERSION} -X main.commit=${COMMIT}" \
         -o /elchi-shield ./cmd/elchi-shield
 

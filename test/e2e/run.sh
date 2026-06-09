@@ -2,7 +2,7 @@
 # Comprehensive end-to-end suite: a REAL Envoy proxies HTTP through elchi-shield
 # to a configurable echo upstream, exercising EVERY capability phase by phase
 # (routing, header checks, body checks, engines, modes, response inspection,
-# observability, hot-reload). Built with -tags coraza so the WAF is testable.
+# observability, hot-reload). The single full binary includes every engine.
 #
 # Needs: go, curl, gzip, and a real Envoy (auto-fetched via func-e, or ENVOY=...).
 set -uo pipefail
@@ -33,7 +33,7 @@ msum(){ curl -s "http://${HTTP}/metrics" | awk -v re="$1" '$0 ~ re {s+=$2} END{p
 H(){ printf -- '-HHost:%s' "$1"; }   # host header arg
 
 # ---------------- bring up the stack ----------------
-( cd "$ROOT" && go build -tags "coraza httpsig openapi" -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
+( cd "$ROOT" && go build -o "$DIR/elchi-shield.bin" ./cmd/elchi-shield ) || { echo "build failed"; exit 1; }
 go build -o "$DIR/gentoken.bin" "$DIR/gentoken" || { echo "gentoken build failed"; exit 1; }
 go build -o "$DIR/gensig.bin" "$DIR/gensig" || { echo "gensig build failed"; exit 1; }
 go build -o "$DIR/genjwks.bin" "$DIR/genjwks" || { echo "genjwks build failed"; exit 1; }
@@ -247,7 +247,7 @@ req GET /hmac "$AH" -H "X-Signature: $SIGO" -H "X-Timestamp: $OLD"; expect "stal
 NONCE="n-$TS"; SIGN=$(sig "$TS" "$NONCE" '')
 req GET /hmac "$AH" -H "X-Signature: $SIGN" -H "X-Timestamp: $TS" -H "X-Nonce: $NONCE"; expect "first nonce use → 200" "$CODE" 200
 req GET /hmac "$AH" -H "X-Signature: $SIGN" -H "X-Timestamp: $TS" -H "X-Nonce: $NONCE"; expect "replayed nonce → 403" "$CODE" 403
-# RFC 9421 (httpsig build tag): sign @method/@authority/@path with gensig.
+# RFC 9421 (httpsig): sign @method/@authority/@path with gensig.
 SIGSECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 SO=$("$DIR/gensig.bin" -secret "$SIGSECRET" -method GET -host api.example.com -path /sig)
 RSI=$(printf '%s\n' "$SO" | sed -n 1p); RSIG=$(printf '%s\n' "$SO" | sed -n 2p)
@@ -298,7 +298,7 @@ req GET '/dlp?resp=privkey' "$AH"; expect "private key in response → blocked (
 req GET '/dlp?resp=json' "$AH";    expect "clean response → 200" "$CODE" 200
 
 # ==================== PHASE 5g: Engine — OpenAPI positive validation ====================
-phase "Engine: OpenAPI validation (-tags openapi)"
+phase "Engine: OpenAPI validation"
 req GET '/oas/users/5?q=hi' "$AH";                     expect "conforming request → 200" "$CODE" 200
 req GET '/oas/users/abc?q=hi' "$AH";                   expect "path param wrong type → 403" "$CODE" 403
 req GET '/oas/users/5' "$AH";                          expect "missing required query param → 403" "$CODE" 403
@@ -307,7 +307,7 @@ req POST /oas/create "$AH" -H 'Content-Type: application/json' --data '{"name":"
 req POST /oas/create "$AH" -H 'Content-Type: application/json' --data '{}';               expect "body missing required field → 403" "$CODE" 403
 
 # ==================== PHASE 6: Engines — Coraza WAF ====================
-phase "Engine: Coraza WAF (-tags coraza)"
+phase "Engine: Coraza WAF"
 req POST /waf "$AH" -H 'Content-Type: text/plain' --data 'q=1 union select password from users'; expect "SQLi (union select) → 403" "$CODE" 403
 req POST /waf "$AH" -H 'Content-Type: text/plain' --data 'user=admin or 1=1';                     expect "SQLi (or 1=1) → 403" "$CODE" 403
 req POST /waf "$AH" -H 'Content-Type: text/plain' --data 'c=<script>alert(1)</script>';           expect "XSS (<script>) → 403" "$CODE" 403

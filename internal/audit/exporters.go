@@ -22,13 +22,13 @@ type ExporterOptions struct {
 // ExporterFactory constructs an exporter from options.
 type ExporterFactory func(ExporterOptions) (Exporter, error)
 
-// exporterRegistry holds factories registered at init time by build-tagged
-// adapters (clickhouse, otel). The "file" sink is built in directly. Mutation
+// exporterRegistry holds factories registered at init time by adapter
+// subpackages (clickhouse, otel). The "file" sink is built in directly. Mutation
 // happens only during package init (single goroutine), before any reads.
 var exporterRegistry = map[string]ExporterFactory{}
 
-// RegisterExporter installs a named exporter factory. Called from a build-tagged
-// adapter's init().
+// RegisterExporter installs a named exporter factory. Called from an adapter
+// subpackage's init().
 func RegisterExporter(name string, f ExporterFactory) {
 	exporterRegistry[name] = f
 }

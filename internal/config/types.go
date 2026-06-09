@@ -232,8 +232,7 @@ type EnginesSpec struct {
 	OpenAPI       *OpenAPISpec       `yaml:"openapi" json:"openapi"`
 }
 
-// OpenAPISpec configures the OpenAPI positive-validation engine (only usable in a
-// binary built with the `openapi` build tag).
+// OpenAPISpec configures the OpenAPI positive-validation engine.
 type OpenAPISpec struct {
 	SpecFile             string `yaml:"spec_file" json:"spec_file"`
 	ValidateRequestBody  bool   `yaml:"validate_request_body" json:"validate_request_body"`
@@ -282,9 +281,8 @@ type XFCCSpec struct {
 	Hashes         []string `yaml:"hashes" json:"hashes"`
 }
 
-// HTTPSignatureSpec configures the RFC 9421 (HTTP Message Signatures) engine
-// (only usable in a binary built with the `httpsig` build tag). Initial support
-// is hmac-sha256.
+// HTTPSignatureSpec configures the RFC 9421 (HTTP Message Signatures) engine.
+// Initial support is hmac-sha256.
 type HTTPSignatureSpec struct {
 	// Secret is the shared HMAC key.
 	Secret string `yaml:"secret" json:"secret"`
@@ -464,9 +462,8 @@ type JWTSpec struct {
 	Leeway Duration `yaml:"leeway" json:"leeway"`
 }
 
-// CorazaSpec configures the Coraza WAF engine (only usable in a binary built
-// with the `coraza` build tag). `include_owasp` loads the OWASP Core Rule Set,
-// which is embedded in the binary — no rule files need to be shipped.
+// CorazaSpec configures the Coraza WAF engine. `include_owasp` loads the OWASP
+// Core Rule Set, which is embedded in the binary — no rule files need to be shipped.
 type CorazaSpec struct {
 	Directives     string   `yaml:"directives" json:"directives"`
 	DirectivesFile string   `yaml:"directives_file" json:"directives_file"`

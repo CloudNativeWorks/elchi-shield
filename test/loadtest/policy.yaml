@@ -1,6 +1,6 @@
 # Load-test policy: representative routes for throughput measurement against a
-# real Envoy. Uses only lean-binary (no build tag) features so the load test
-# reflects the production default binary.
+# real Envoy. There are no build tags; this exercises the single full binary so
+# the load test reflects the production binary.
 apiVersion: sentinel.elchi.io/v1
 kind: SecurityPolicy
 metadata:

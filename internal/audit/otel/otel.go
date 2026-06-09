@@ -1,9 +1,6 @@
-//go:build otel
-
-// Package otel is a build-tagged audit Exporter that emits events as
-// OpenTelemetry logs over OTLP/HTTP. It is compiled only with the `otel` build
-// tag and registers itself with the audit package on init, so `--audit-exporter
-// otel` becomes available. Build with: go build -tags otel ./...
+// Package otel is an audit Exporter that emits events as OpenTelemetry logs over
+// OTLP/HTTP. It is always compiled into the binary and registers itself with the
+// audit package on init, so `--audit-exporter otel` is available.
 package otel
 
 import (

@@ -1,9 +1,6 @@
 # Example policies using the Coraza WAF engine with the OWASP Core Rule Set.
 #
-# REQUIRES a binary built with the `coraza` build tag:
-#   go build -tags coraza ./cmd/elchi-shield
-# On the lean (default) binary a policy that configures engines.coraza fails the
-# config reload with an attributed error and the last-good snapshot stays active.
+# Coraza is always compiled into the binary; no build tag is needed.
 #
 # The OWASP CRS is EMBEDDED in the binary (no rule files to ship): `include_owasp:
 # true` loads it from memory. Coraza always runs in enforcing mode internally and

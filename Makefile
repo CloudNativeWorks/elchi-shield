@@ -7,7 +7,6 @@ CMD       ?= ./cmd/elchi-shield
 VERSION   ?= $(shell cat VERSION 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DOCKER_IMAGE ?= elchi-shield
-TAGS      ?=
 LDFLAGS   := -s -w -X main.version=v$(VERSION) -X main.commit=$(COMMIT)
 
 .PHONY: all build run test race bench loadtest loadtest-real profile cover vet lint tidy clean fmt fuzz vuln docker e2e
@@ -16,16 +15,16 @@ all: vet test build
 
 # -trimpath + -buildvcs stamp a reproducible binary; version/commit come from the
 # VERSION file + git (read back into build_info, the startup log, and /configz).
+# The build is a single full binary — every engine and audit sink is compiled in.
 build:
-	$(GO) build -trimpath -buildvcs=true -tags "$(TAGS)" -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(CMD)
+	$(GO) build -trimpath -buildvcs=true -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(CMD)
 
 # Local from-source image (the release pipeline instead bundles the prebuilt
-# binary via deploy/Dockerfile-release-binary). Pass TAGS=coraza for the WAF image.
+# binary via deploy/Dockerfile-release-binary).
 docker:
 	docker build -f deploy/Dockerfile \
 		--build-arg APP_VERSION=v$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
-		--build-arg TAGS="$(TAGS)" \
 		-t $(DOCKER_IMAGE):v$(VERSION) -t $(DOCKER_IMAGE):latest .
 
 run: build

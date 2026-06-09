@@ -73,13 +73,16 @@ func TestEmptySetIsNoOp(t *testing.T) {
 	}
 }
 
-func TestCorazaNotBuilt(t *testing.T) {
-	// Without the `coraza` build tag the factory is unregistered.
+func TestCorazaUnregisteredFallback(t *testing.T) {
+	// The real binary always registers the adapter (a blank import in cmd), but
+	// this engine-package test binary doesn't import it, so the factory is nil.
+	// NewCoraza must then return ErrNotImplemented (a defensive fallback) rather
+	// than panic.
 	if corazaFactory != nil {
-		t.Skip("coraza adapter is built in")
+		t.Skip("coraza adapter is registered in this test binary")
 	}
 	if _, err := NewCoraza(CorazaConfig{}); !errors.Is(err, ErrNotImplemented) {
-		t.Error("Coraza should be ErrNotImplemented without the build tag")
+		t.Error("Coraza should be ErrNotImplemented when the factory is unregistered")
 	}
 }
 

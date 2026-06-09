@@ -1,9 +1,6 @@
-//go:build clickhouse
-
-// Package clickhouse is a build-tagged audit Exporter that batch-inserts events
-// into ClickHouse. It is compiled only with the `clickhouse` build tag and
-// registers itself with the audit package on init, so `--audit-exporter
-// clickhouse` becomes available. Build with: go build -tags clickhouse ./...
+// Package clickhouse is an audit Exporter that batch-inserts events into
+// ClickHouse. It is always compiled into the binary and registers itself with
+// the audit package on init, so `--audit-exporter clickhouse` is available.
 package clickhouse
 
 import (

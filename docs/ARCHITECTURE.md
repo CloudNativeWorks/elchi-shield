@@ -280,8 +280,9 @@ type Resolver interface {
 // aggregate ("most severe wins"). Engines are compiled PER POLICY (different
 // domains/routes can run different engines). To avoid an import cycle, engines
 // take a narrow read-only engine.Request (not the pipeline Transaction), which
-// makes the engine package a near-leaf (only `decision`). Built-in: JWT;
-// build-tagged: Coraza. Same interface for any future engine.
+// makes the engine package a near-leaf (only `decision`). Built-in: JWT; the
+// Coraza adapter registers itself via init (blank-imported in cmd, always
+// compiled). Same interface for any future engine.
 type SecurityEngine interface {
     Name() string
     RequiresBody() bool                                          // drives body gating

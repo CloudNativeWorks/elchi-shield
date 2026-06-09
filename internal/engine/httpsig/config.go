@@ -1,8 +1,6 @@
 // Package httpsig implements an RFC 9421 (HTTP Message Signatures) verification
-// engine. The real implementation depends on github.com/yaronf/httpsign and is
-// only compiled into a binary built with the `httpsig` build tag; the default
-// lean binary gets a stub whose constructor returns engine.ErrNotImplemented
-// (mirroring the Coraza WAF engine). See httpsig.go / stub.go.
+// engine. The implementation depends on github.com/yaronf/httpsign and is always
+// compiled into the binary. See httpsig.go.
 package httpsig
 
 import "time"

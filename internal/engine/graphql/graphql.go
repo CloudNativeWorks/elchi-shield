@@ -2,7 +2,7 @@
 // query once and enforces configurable abuse limits — maximum selection depth,
 // alias count, root/total field counts, batched-operation count, and an
 // introspection block — with a fragment-cycle bound so the guard cannot itself
-// be DoS'd. It is pure-Go (vektah/gqlparser) and ships in the lean binary.
+// be DoS'd. It is pure-Go (vektah/gqlparser) and ships in the binary.
 //
 // The engine acts on requests that look like GraphQL: a POST with a matching
 // content-type, or a GET carrying a ?query= parameter (GraphQL-over-GET), within

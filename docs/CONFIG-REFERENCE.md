@@ -29,7 +29,7 @@ config directory.
     [bot](#engine-bot) · [api_key](#engine-api_key) · [hmac_sign](#engine-hmac_sign) ·
     [http_signature](#engine-http_signature) · [xfcc](#engine-xfcc) ·
     [graphql](#engine-graphql) · [openapi](#engine-openapi)
-- [Build-tag matrix](#build-tag-matrix)
+- [Engines and audit sinks](#engines-and-audit-sinks)
 - [Conventions: types](#conventions-types)
 
 ---
@@ -376,8 +376,7 @@ checks:
 ## `engines`
 
 The pluggable security engines. Each is a sub-block under `engines:`; omit a block
-to disable that engine. Engines marked **(build tag)** are only available in a
-binary built with the corresponding tag (the default build ships a stub).
+to disable that engine. Every engine is always compiled into the binary.
 
 ```yaml
 engines:
@@ -429,7 +428,7 @@ Built-in. Header-phase. Validates a bearer JWT against a **JWK Set**.
 
 ---
 
-### Engine: `coraza` **(build tag: `coraza`)**
+### Engine: `coraza`
 Body-phase WAF. The **OWASP Core Rule Set is embedded in the binary** — set
 `include_owasp: true` to load it from memory (no rule files to ship).
 
@@ -614,7 +613,7 @@ protection and optional body-digest gating.
 
 ---
 
-### Engine: `http_signature` **(build tag: `httpsig`)**
+### Engine: `http_signature`
 RFC 9421 (HTTP Message Signatures). Initial support: `hmac-sha256`.
 
 | Field | Type | Required | Default | Allowed / notes |
@@ -666,7 +665,7 @@ zero individual limit disables only *that* check).
 
 ---
 
-### Engine: `openapi` **(build tag: `openapi`)**
+### Engine: `openapi`
 Positive-security validation against an OpenAPI 3.x spec.
 
 | Field | Type | Required | Default | Purpose |
@@ -677,19 +676,11 @@ Positive-security validation against an OpenAPI 3.x spec.
 
 ---
 
-## Build-tag matrix
+## Engines and audit sinks
 
-| Engine / sink | Default build | Required tag |
-|---|---|---|
-| jwt, jwks, rate_limit, ip_reputation (+GeoIP), bot, api_key, hmac_sign, xfcc, graphql, DLP, sensitive-data | ✅ available | — |
-| `coraza` | stub | `coraza` |
-| `http_signature` | stub | `httpsig` |
-| `openapi` | stub | `openapi` |
-| ClickHouse / OTEL audit sinks | n/a | `clickhouse` / `otel` |
-
-Building: `make build` (lean) or `go build -tags "coraza httpsig openapi clickhouse otel" ./...`.
-Referencing a build-tag engine in a binary that lacks the tag fails at config load
-with an attributed error.
+There are no build tags. The single binary always compiles in every engine
+(including `coraza`, `http_signature`, and `openapi`) and every audit sink
+(ClickHouse, OTEL). Build with `make build` and configure whatever you need.
 
 ---
 

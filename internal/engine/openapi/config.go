@@ -1,9 +1,7 @@
 // Package openapi implements a body-phase positive-security engine: it validates
 // each request against an OpenAPI 3.x specification, so only requests that
-// conform to the declared contract pass. The real implementation depends on
-// github.com/pb33f/libopenapi(-validator) and is compiled only into a binary
-// built with the `openapi` build tag; the default lean binary gets a stub whose
-// constructor returns engine.ErrNotImplemented (mirroring Coraza/httpsig).
+// conform to the declared contract pass. The implementation depends on
+// github.com/pb33f/libopenapi(-validator) and is always compiled into the binary.
 package openapi
 
 // Config configures the OpenAPI validation engine.

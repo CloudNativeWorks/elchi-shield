@@ -15,7 +15,7 @@ make e2e                      # uses func-e to fetch/run a real Envoy
 ENVOY=/path/to/envoy make e2e # or use a system Envoy binary
 ```
 
-It builds `elchi-shield` **with `-tags coraza`** (so the WAF is exercised),
+It builds the single full `elchi-shield` binary (all engines compiled in, so the WAF is exercised),
 starts the echo upstream + elchi-shield (ext_proc on loopback TCP
 `127.0.0.1:9999`, health on `:9001`) and a real Envoy (listener
 `127.0.0.1:10000`, `--base-id` so it never collides with another local Envoy),

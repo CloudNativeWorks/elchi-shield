@@ -1,5 +1,3 @@
-//go:build openapi
-
 package openapi
 
 import (

@@ -65,8 +65,7 @@ func (c *engineCache) get(spec *config.EnginesSpec) (*engine.Set, error) {
 
 // buildEngines compiles a policy's engine specification into an engine.Set
 // during the cold path. It returns nil when no engines are configured. Errors
-// (bad key file, Coraza requested on a binary without the build tag) abort the
-// reload so the last-good snapshot stays active.
+// (e.g. a bad key file) abort the reload so the last-good snapshot stays active.
 func buildEngines(spec *config.EnginesSpec) (*engine.Set, error) {
 	if spec == nil {
 		return nil, nil

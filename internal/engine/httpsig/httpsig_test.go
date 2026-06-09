@@ -1,5 +1,3 @@
-//go:build httpsig
-
 package httpsig
 
 import (

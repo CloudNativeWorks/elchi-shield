@@ -1,6 +1,6 @@
 // Package ipreputation implements a header-phase security engine that blocks
 // requests by source IP: static CIDR allow/deny lists plus threat-intelligence
-// feeds loaded from disk. It is pure-Go and ships in the lean binary.
+// feeds loaded from disk. It is pure-Go and ships in the binary.
 //
 // All compilation (parsing feeds, building the prefix tries) happens once on the
 // cold path in New; the hot path parses the source IP once and does

@@ -1,11 +1,7 @@
-//go:build coraza
-
 // Package coraza adapts the Coraza WAF to the SecurityEngine interface. It is
-// compiled only when the `coraza` build tag is set, keeping the heavy dependency
-// out of the default binary. On init it registers itself with the engine package
-// so a policy that configures `engines.coraza` is served by this adapter.
-//
-// Build with: go build -tags coraza ./cmd/elchi-shield
+// always compiled into the binary. On init it registers itself with the engine
+// package (triggered by a blank import in cmd/elchi-shield) so a policy that
+// configures `engines.coraza` is served by this adapter.
 package coraza
 
 import (

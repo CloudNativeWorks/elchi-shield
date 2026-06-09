@@ -1,5 +1,5 @@
 // Package bot implements a header-phase, block-capable bot/scanner/automation
-// detection engine. It is pure-Go and ships in the lean binary. Detection is a
+// detection engine. It is pure-Go and ships in the binary. Detection is a
 // layered scorer, cheapest decisive signal first; any layer may hard-block, and
 // the accumulated score blocks when it reaches the configured threshold.
 //

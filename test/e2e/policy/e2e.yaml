@@ -163,7 +163,7 @@ spec:
               hmac_sign:
                 secret: "e2e-hmac-secret-0123456789abcdef"
                 window: 300s
-        # RFC 9421 HTTP Message Signatures (requires the `httpsig` build tag).
+        # RFC 9421 HTTP Message Signatures.
         - match: { path_prefix: "/sig" }
           policy:
             mode: block
@@ -194,7 +194,7 @@ spec:
                 require_present: true
                 uris: ["spiffe://cluster/ns/team/sa/web"]
                 dns_names: ["client.example.com"]
-        # OpenAPI positive validation (requires the `openapi` build tag).
+        # OpenAPI positive validation.
         - match: { path_prefix: "/oas" }
           policy:
             mode: block

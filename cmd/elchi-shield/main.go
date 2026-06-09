@@ -401,8 +401,8 @@ func run(cfg appConfig, logger *slog.Logger) error {
 }
 
 // buildAuditor selects the audit exporter from config and wraps it in an async
-// buffer so emission never blocks the request path. Remote exporters
-// (clickhouse/otel) are only available when their build tag is compiled in.
+// buffer so emission never blocks the request path. All exporters
+// (clickhouse/otel included) are always compiled into the binary.
 // buildAuditor returns the auditor and, when an async sink is configured, the
 // BufferedExporter (so its drop/queue stats can back metrics). The buffered
 // exporter is nil for the "none" sink.
@@ -489,7 +489,7 @@ func parseFlags(args []string) appConfig {
 	fs.Int64Var(&cfg.maxInFlightBody, "max-inflight-body-bytes", envInt64("ELCHI_SHIELD_MAX_INFLIGHT_BODY_BYTES", 256<<20), "cap on total body bytes buffered across all concurrent streams (0 = unbounded)")
 	fs.DurationVar(&cfg.debounce, "watch-debounce", envDuration("ELCHI_SHIELD_WATCH_DEBOUNCE", 300*time.Millisecond), "config watcher debounce window")
 	fs.BoolVar(&cfg.defaultAllow, "default-allow", envBool("ELCHI_SHIELD_DEFAULT_ALLOW", true), "posture when no policy matches: allow (true) or deny (false)")
-	fs.StringVar(&cfg.auditExporter, "audit-exporter", env("ELCHI_SHIELD_AUDIT_EXPORTER", ""), "audit sink: none|file|clickhouse|otel (clickhouse/otel need their build tag)")
+	fs.StringVar(&cfg.auditExporter, "audit-exporter", env("ELCHI_SHIELD_AUDIT_EXPORTER", ""), "audit sink: none|file|clickhouse|otel")
 	fs.StringVar(&cfg.auditFile, "audit-file", env("ELCHI_SHIELD_AUDIT_FILE", ""), "path to NDJSON audit log (used by the file exporter)")
 	fs.StringVar(&cfg.auditDSN, "audit-clickhouse-dsn", env("ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN", ""), "ClickHouse DSN for the clickhouse audit exporter")
 	fs.StringVar(&cfg.auditEndpoint, "audit-otel-endpoint", env("ELCHI_SHIELD_AUDIT_OTEL_ENDPOINT", ""), "OTLP endpoint for the otel audit exporter")

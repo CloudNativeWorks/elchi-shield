@@ -16,8 +16,9 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 )
 
-// ErrNotImplemented is returned by engine constructors that are not built into
-// this binary (e.g. Coraza without the build tag).
+// ErrNotImplemented is returned by an engine constructor when its adapter
+// factory was not registered (a defensive fallback, e.g. in a unit test that
+// builds the engine without importing the adapter).
 var ErrNotImplemented = errors.New("engine not implemented")
 
 // Direction distinguishes request from response inspection.

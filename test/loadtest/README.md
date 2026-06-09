@@ -11,8 +11,8 @@ ENVOY=/path/to/envoy make loadtest-real  # use a specific Envoy binary
 ```
 
 Needs a real Envoy (auto-fetched via [`func-e`](https://github.com/tetratelabs/func-e),
-or set `ENVOY=`). The shield is built as the **lean binary (no build tags)** so the
-numbers reflect the production default image.
+or set `ENVOY=`). The shield is built as the **single full binary** (there are no
+build tags) so the numbers reflect the production image.
 
 ## Scenarios
 
@@ -31,7 +31,7 @@ per-core ceiling.
 
 - `driver/` — stdlib-only closed-loop load generator (req/s + percentiles). Exits
   non-zero on any error or 5xx, so the test fails loudly on a broken data plane.
-- `policy.yaml` — the load policy (lean-binary features only).
+- `policy.yaml` — the load policy.
 - `envoy.yaml` — Envoy config, dedicated ports (runs alongside the e2e harness),
   mirrors production: static body mode `NONE` + `allow_mode_override`.
 - `run.sh` — brings up the stack, runs a correctness sanity check, then the load.

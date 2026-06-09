@@ -97,7 +97,7 @@ Key flags (all also settable via `ELCHI_SHIELD_*` env vars):
 | `--max-body-bytes` | `1048576` | fallback body cap when a policy sets none |
 | `--watch-debounce` | `300ms` | config watcher debounce window |
 | `--default-allow` | `true` | posture when no policy matches (`false` = deny) |
-| `--audit-exporter` | `""` | `none`\|`file`\|`clickhouse`\|`otel` (remote sinks need their build tag) |
+| `--audit-exporter` | `""` | `none`\|`file`\|`clickhouse`\|`otel` |
 | `--audit-file` | `""` | NDJSON path for the `file` exporter |
 | `--audit-clickhouse-dsn` | `""` | ClickHouse DSN (clickhouse exporter) |
 | `--audit-otel-endpoint` | `""` | OTLP endpoint (otel exporter) |
@@ -182,8 +182,8 @@ different domains/routes can run different engines (e.g. different JWT issuers).
   **State-sharing follows inheritance:** a domain-level `rate_limit` inherited by
   several routes is one combined limiter across them; a route-level one is
   independent. Define the limit at the scope it should apply.
-- **Coraza WAF** (opt-in build tag): full ModSecurity-style WAF. Configure under
-  `policy.engines.coraza`; only usable in a binary built with `-tags coraza`.
+- **Coraza WAF**: full ModSecurity-style WAF. Configure under
+  `policy.engines.coraza`. Always compiled into the binary.
 
 ### Per-policy stage ordering
 
@@ -210,20 +210,12 @@ leak-free, proven under `-race`. See
 [`docs/CONCURRENCY.md`](docs/CONCURRENCY.md) — including why "a thread per
 listener" is unnecessary and the gRPC 100-stream cap we remove.
 
-## Build tags (opt-in heavy features)
+## Engines and audit sinks
 
-The default binary is lean. Heavy, optional integrations are behind build tags so
-you only pay for what you use:
-
-```sh
-go build -tags coraza ./cmd/elchi-shield                 # + Coraza WAF engine
-go build -tags clickhouse ./cmd/elchi-shield             # + ClickHouse audit sink
-go build -tags otel ./cmd/elchi-shield                   # + OTEL log audit sink
-go build -tags "coraza clickhouse otel" ./cmd/elchi-shield
-```
-
-Configuring an engine/sink that wasn't compiled in fails fast with a clear error
-(and, for config, keeps the last-good snapshot active).
+There are no build tags: a single full binary always compiles in every engine
+(including the Coraza WAF, OpenAPI validator, and RFC 9421 httpsig) and every
+audit sink (ClickHouse, OTEL). Just configure what you need; an engine or sink is
+available out of the box.
 
 ## Envoy wiring
 

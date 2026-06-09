@@ -1,5 +1,5 @@
-# Example policy using the OpenAPI positive-validation engine (requires a binary
-# built with the `openapi` build tag). It validates each request against an
+# Example policy using the OpenAPI positive-validation engine (always compiled
+# into the binary; no build tag needed). It validates each request against an
 # OpenAPI 3.x contract — path/query/header parameters and, optionally, the
 # request body — so only conforming requests pass (positive security: the
 # inverse of a WAF's deny-list). reject_undeclared_path blocks shadow endpoints.
