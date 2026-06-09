@@ -12,8 +12,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
@@ -79,6 +81,11 @@ func New(cfg Config) (*Engine, error) {
 		} else {
 			sum = sha256.Sum256([]byte(k.Key))
 		}
+		// Reject a duplicate key: a second entry would silently overwrite the
+		// first's scope grant (operators expect additive config, not last-wins).
+		if _, dup := e.keys[sum]; dup {
+			return nil, errors.New("apikey: duplicate key configured")
+		}
 		scopes := make(map[string]struct{}, len(k.Scopes))
 		for _, s := range k.Scopes {
 			scopes[s] = struct{}{}
@@ -112,7 +119,11 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 		return block("apikey.unknown", "unknown API key"), nil
 	}
 	// Scope→path bindings: a matched prefix requires the key to carry the scope.
-	path := pathOnly(req.Path)
+	// Match on the NORMALIZED path (percent-decoded + dot-segment/slash collapsed),
+	// the same form the router resolves on — otherwise "//v1/admin", "/v1/%61dmin",
+	// or "/v1/./admin" would dodge the scope check while the backend still routes
+	// to the protected resource (scope escalation).
+	path := normalizePath(req.Path)
 	for _, b := range e.bindings {
 		if strings.HasPrefix(path, b.PathPrefix) {
 			if _, has := scopes[b.Scope]; !has {
@@ -123,18 +134,19 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	return decision.Verdict{}, nil
 }
 
-// extract reads the key from the configured header or query parameter.
+// extract reads the key from the configured header or query parameter, trimming
+// surrounding whitespace (a proxy may pad a header value).
 func (e *Engine) extract(req *engine.Request) string {
 	if e.fromQuery {
 		if i := strings.IndexByte(req.Path, '?'); i >= 0 {
 			if vals, err := url.ParseQuery(req.Path[i+1:]); err == nil {
-				return vals.Get(e.name)
+				return strings.TrimSpace(vals.Get(e.name))
 			}
 		}
 		return ""
 	}
 	v, _ := req.Headers.Header(e.name)
-	return v
+	return strings.TrimSpace(v)
 }
 
 // decodeHex32 decodes a 64-char hex string into a 32-byte SHA-256 digest.
@@ -151,9 +163,29 @@ func decodeHex32(s string) ([32]byte, error) {
 	return out, nil
 }
 
-func pathOnly(p string) string {
-	before, _, _ := strings.Cut(p, "?")
-	return before
+// normalizePath returns the route-matching form of a path: query/fragment
+// stripped, percent-decoded once, and dot-segments / duplicate slashes collapsed
+// (a trailing slash is preserved). It mirrors the router's matchPath so a scope
+// binding can't be dodged by an alternate encoding of the same resource.
+func normalizePath(raw string) string {
+	p := raw
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	if dec, err := url.PathUnescape(p); err == nil {
+		p = dec
+	}
+	if p == "" {
+		return raw
+	}
+	cleaned := path.Clean(p)
+	if cleaned == "." {
+		cleaned = "/"
+	}
+	if strings.HasSuffix(p, "/") && !strings.HasSuffix(cleaned, "/") {
+		cleaned += "/"
+	}
+	return cleaned
 }
 
 func block(ruleID, reason string) decision.Verdict {

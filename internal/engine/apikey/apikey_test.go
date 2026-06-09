@@ -144,3 +144,43 @@ func TestMetadata(t *testing.T) {
 		t.Errorf("close: %v", err)
 	}
 }
+
+func TestScopeBindingNormalizationBypass(t *testing.T) {
+	e, err := New(Config{
+		Keys:     []KeyEntry{{Key: "read-key", Scopes: []string{"read"}}},
+		Bindings: []ScopeBinding{{PathPrefix: "/v1/admin", Scope: "admin"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All of these normalize to /v1/admin and must be caught by the scope binding
+	// (a read-only key lacking "admin" → block), not dodged by the encoding.
+	for _, p := range []string{"/v1/admin", "//v1/admin", "/v1/%61dmin", "/v1/./admin", "/v1/admin?x=1"} {
+		if v := inspect(t, e, p, hdrs{"X-Api-Key": "read-key"}); v.RuleID != "apikey.scope" {
+			t.Fatalf("path %q should require admin scope (normalization bypass), got %+v", p, v)
+		}
+	}
+	// A genuinely different path is not affected.
+	if v := inspect(t, e, "/v1/public", hdrs{"X-Api-Key": "read-key"}); v.Action == decision.Block {
+		t.Fatal("a non-admin path should pass with a read key")
+	}
+}
+
+func TestDuplicateKeyRejected(t *testing.T) {
+	if _, err := New(Config{Keys: []KeyEntry{
+		{Key: "dup", Scopes: []string{"read", "write"}},
+		{Key: "dup", Scopes: []string{"read"}},
+	}}); err == nil {
+		t.Fatal("a duplicate key must be rejected (avoids silent scope downgrade)")
+	}
+}
+
+func TestKeyWhitespaceTrimmed(t *testing.T) {
+	e, err := New(Config{Keys: []KeyEntry{{Key: "secret-key"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := inspect(t, e, "/", hdrs{"X-Api-Key": "  secret-key  "}); v.Action == decision.Block {
+		t.Fatal("a padded header key should still authenticate (trimmed)")
+	}
+}
