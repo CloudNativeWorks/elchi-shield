@@ -60,6 +60,39 @@ A deliberate non-optimization: pooling the one per-request `*Decision` would sav
 ~30ns out of ~9,000ns (<0.5%) at the cost of lifetime complexity — not worth it
 until a profile says otherwise.
 
+### Cutting ext_proc round-trips (the biggest lever)
+
+Since the transport is the cost, the highest-leverage win is sending **fewer
+ext_proc messages per request**. The static Envoy mode sends response headers to
+shield for every request, but most policies inspect only the request. Shield now
+sets `ResponseHeaderMode: SKIP` in the request-headers `mode_override` whenever
+`CompiledPolicy.NeedsResponseInspection()` is false (no `inspect_response_body`,
+no DLP on the response, no response-inspecting engine), so Envoy skips the entire
+response phase — eliminating ~half the ext_proc round-trips for the common case.
+Response-inspecting policies (Coraza, response DLP, response-body checks) keep the
+phase (header send-modes default to `DEFAULT` = use the static config; `SKIP` is
+explicit), so no inspection capability is lost.
+
+Other capability-neutral wins on this path: the request-headers mode overrides and
+the no-mutation CONTINUE responses are shared immutable singletons (no per-request
+alloc); the random request-id is minted only when Envoy omits `x-request-id`; and
+the gRPC server uses larger HTTP/2 windows + a 128 KiB read buffer.
+
+A vtproto codec was evaluated and **rejected**: go-control-plane's generated
+vtproto ships marshal+size but **no `UnmarshalVT`**, so it can't accelerate the
+dominant `ProcessingRequest` decode — only the already-small (and now cached)
+response marshal. Not worth a custom codec for that.
+
+### Real-traffic load test — `make loadtest-real`
+
+A REAL Envoy proxies sustained traffic through shield to an echo upstream; a
+closed-loop driver reports req/s + p50/p99 (see `test/loadtest`). On a single
+10-core box (Envoy + driver + upstream co-resident, so absolute numbers are
+single-box end-to-end, not a per-core ceiling): passthrough ~39k req/s (p50
+~0.9ms), header-only ~31k, body-inspecting ~23k. The response-phase skip lifts
+passthrough ~30% over the pre-optimization baseline; the gain is larger off-box
+where shield doesn't share cores with the load generator.
+
 ## Tuning for best performance
 
 1. **Use a Unix domain socket** (`--extproc-network unix`), not loopback TCP —
