@@ -153,6 +153,12 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 	if s.Timeout != nil && s.Timeout.AsDuration() <= 0 {
 		add("timeout", fmt.Errorf("must be > 0, got %s", s.Timeout.AsDuration()))
 	}
+	// The anomaly threshold is checked as `score >= threshold` only when > 0; a
+	// negative value would silently disable anomaly blocking the operator asked
+	// for, so reject it (0 = explicitly disabled).
+	if s.AnomalyThreshold != nil && *s.AnomalyThreshold < 0 {
+		add("anomaly_threshold", fmt.Errorf("must be >= 0 (0 disables), got %d", *s.AnomalyThreshold))
+	}
 	if s.LogLevel != nil {
 		if _, ok := knownLogLevels[strings.ToLower(*s.LogLevel)]; !ok {
 			add("log_level", fmt.Errorf("invalid log level %q", *s.LogLevel))

@@ -100,3 +100,20 @@ func TestInspectSumsScores(t *testing.T) {
 		t.Fatal("non-blocking scoring engines should not produce a block verdict")
 	}
 }
+
+func TestInspectIgnoresNegativeScores(t *testing.T) {
+	// A negative score from a buggy/misconfigured engine must NOT subtract from the
+	// collaborative total and mask the other engines' signals below the threshold.
+	set := NewSet(
+		&fakeEngine{name: "a", verdict: decision.Verdict{Action: decision.Continue, Score: 40}},
+		&fakeEngine{name: "b", verdict: decision.Verdict{Action: decision.Continue, Score: -1000}},
+		&fakeEngine{name: "c", verdict: decision.Verdict{Action: decision.Continue, Score: 30}},
+	)
+	v, err := set.InspectHeaderPhase(context.Background(), &Request{Direction: DirectionRequest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Score != 70 {
+		t.Fatalf("negative scores must be ignored (want 70), got %d", v.Score)
+	}
+}

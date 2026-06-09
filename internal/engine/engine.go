@@ -177,7 +177,12 @@ func (s *Set) inspect(ctx context.Context, req *Request, want func(SecurityEngin
 			errs = append(errs, err)
 			continue
 		}
-		totalScore += v.Score // collaborative anomaly score, summed across engines
+		// Collaborative anomaly score, summed across engines. Only POSITIVE
+		// contributions count: a negative score (a buggy/misconfigured engine) must
+		// never subtract from the total and mask an attack below the threshold.
+		if v.Score > 0 {
+			totalScore += v.Score
+		}
 		if v.Action == decision.Block && v.Severity >= worst.Severity {
 			worst = v
 		} else if worst.Action != decision.Block && v.Severity > worst.Severity {

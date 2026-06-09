@@ -283,6 +283,14 @@ func TestValidateRejectsAbsurdBodyCap(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNegativeAnomalyThreshold(t *testing.T) {
+	doc := strings.Replace(validDoc, "mode: block", "mode: block\n    anomaly_threshold: -5", 1)
+	dir := writeFiles(t, map[string]string{"a.yaml": doc})
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "anomaly_threshold") {
+		t.Fatalf("negative anomaly_threshold should be rejected, got %v", err)
+	}
+}
+
 func TestValidateInvalidSamplingRate(t *testing.T) {
 	doc := strings.Replace(validDoc, "mode: block", "mode: block\n    sampling_rate: 2.5", 1)
 	dir := writeFiles(t, map[string]string{"a.yaml": doc})
