@@ -262,6 +262,9 @@ req GET /jwks "$AH";                                        expect "missing JWT 
 req GET /xfcc "$AH" -H 'x-test-client-cert: URI=spiffe://cluster/ns/team/sa/web'; expect "XFCC SPIFFE URI allow-listed → 200" "$CODE" 200
 req GET /xfcc "$AH" -H 'x-test-client-cert: DNS=client.example.com';              expect "XFCC DNS allow-listed → 200" "$CODE" 200
 req GET /xfcc "$AH" -H 'x-test-client-cert: URI=spiffe://cluster/ns/evil/sa/x';   expect "XFCC identity not allow-listed → 403" "$CODE" 403
+# A prepended forged allow-listed identity must NOT authenticate: only the last
+# (Envoy-appended) element is trusted, and here it is the non-allow-listed one.
+req GET /xfcc "$AH" -H 'x-test-client-cert: URI=spiffe://cluster/ns/team/sa/web,Hash=abc;URI=spiffe://cluster/ns/evil/sa/x'; expect "XFCC prepended spoof (last element wins) → 403" "$CODE" 403
 req GET /xfcc "$AH";                                        expect "XFCC required but absent → 403" "$CODE" 403
 
 # ==================== PHASE 5f: Engine — GraphQL guard ====================

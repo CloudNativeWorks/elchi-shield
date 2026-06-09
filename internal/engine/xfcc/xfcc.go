@@ -20,7 +20,7 @@ type Config struct {
 	RequirePresent bool
 	// Allow-list match values.
 	URIs     []string // SAN URIs / SPIFFE IDs (exact)
-	DNSNames []string // SAN DNS names (exact)
+	DNSNames []string // SAN DNS names (case-insensitive, RFC 1035)
 	Subjects []string // full subject DNs (exact)
 	Hashes   []string // cert SHA-256 fingerprints (hex, case-insensitive)
 }
@@ -46,7 +46,7 @@ func New(cfg Config) (*Engine, error) {
 		header:         header,
 		requirePresent: cfg.RequirePresent,
 		uris:           toSet(cfg.URIs, false),
-		dns:            toSet(cfg.DNSNames, false),
+		dns:            toSet(cfg.DNSNames, true), // DNS names are case-insensitive (RFC 1035)
 		subjects:       toSet(cfg.Subjects, false),
 		hashes:         toSet(cfg.Hashes, true), // fingerprints compared case-insensitively
 	}
@@ -79,11 +79,11 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	if !e.hasAllow {
 		return decision.Verdict{}, nil // presence-only mode
 	}
+	// Only the last element is Envoy's appended, verified identity; earlier
+	// elements may be client-supplied and are not trusted (see package doc).
 	elems := parse(hdr)
-	for i := range elems {
-		if e.matches(&elems[i]) {
-			return decision.Verdict{}, nil
-		}
+	if n := len(elems); n > 0 && e.matches(&elems[n-1]) {
+		return decision.Verdict{}, nil
 	}
 	return block("xfcc.no_match", "client certificate identity not in the allow-list"), nil
 }
@@ -102,7 +102,7 @@ func (e *Engine) matches(el *Element) bool {
 		}
 	}
 	for _, d := range el.DNSs {
-		if _, ok := e.dns[d]; ok {
+		if _, ok := e.dns[strings.ToLower(d)]; ok {
 			return true
 		}
 	}

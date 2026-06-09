@@ -133,6 +133,52 @@ func TestPresenceOnly(t *testing.T) {
 	}
 }
 
+func TestOnlyLastElementTrusted(t *testing.T) {
+	e, _ := New(Config{URIs: []string{"spiffe://cluster/ns/team/sa/web"}})
+	// A client prepends a forged allow-listed identity; Envoy appends the real
+	// (non-allow-listed) cert as the LAST element. Only the last is trusted, so
+	// the forged prefix must NOT authenticate.
+	spoof := `URI=spiffe://cluster/ns/team/sa/web,Hash=abc;URI=spiffe://cluster/ns/evil/sa/x`
+	if v := inspect(t, e, spoof); v.RuleID != "xfcc.no_match" {
+		t.Fatalf("a prepended spoofed identity must not authenticate (only the last/Envoy element is trusted), got %+v", v)
+	}
+	// Legitimate: Envoy's appended (last) element matches the allow-list.
+	legit := `URI=spiffe://cluster/ns/evil/sa/x,Hash=abc;URI=spiffe://cluster/ns/team/sa/web`
+	if v := inspect(t, e, legit); v.Action == decision.Block {
+		t.Fatalf("the last (Envoy) element matching the allow-list should pass, got %+v", v)
+	}
+}
+
+func TestParseEscapedQuoteNoDesync(t *testing.T) {
+	// A Subject DN with an escaped quote and an embedded comma must stay a SINGLE
+	// element: the escaped `\"` must not close the quote (which would let the
+	// comma split off a forged second cert element).
+	els := parse(`Subject="CN=a\",O=b";Hash=h`)
+	if len(els) != 1 {
+		t.Fatalf("escaped quote/comma must not split the element, got %d: %+v", len(els), els)
+	}
+	if els[0].Subject != `CN=a",O=b` {
+		t.Errorf("subject = %q, want %q (backslash escapes undone)", els[0].Subject, `CN=a",O=b`)
+	}
+	if els[0].Hash != "h" {
+		t.Errorf("hash = %q, want %q", els[0].Hash, "h")
+	}
+}
+
+func TestParseEscapedBackslash(t *testing.T) {
+	els := parse(`Subject="CN=path\\to\\x"`)
+	if len(els) != 1 || els[0].Subject != `CN=path\to\x` {
+		t.Fatalf("escaped backslashes must be unescaped, got %+v", els)
+	}
+}
+
+func TestMatchDNSCaseInsensitive(t *testing.T) {
+	e, _ := New(Config{DNSNames: []string{"api.example.com"}})
+	if v := inspect(t, e, `DNS=API.Example.COM`); v.Action == decision.Block {
+		t.Fatal("DNS names must match case-insensitively (RFC 1035)")
+	}
+}
+
 func TestResponseDirectionPasses(t *testing.T) {
 	e, _ := New(Config{RequirePresent: true, URIs: []string{"spiffe://x"}})
 	v, err := e.Inspect(context.Background(), &engine.Request{Direction: engine.DirectionResponse, Headers: hdrs{}})
