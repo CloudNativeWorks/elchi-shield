@@ -70,6 +70,10 @@ func newEngine(cfg engine.CorazaConfig) (*wafEngine, error) {
 func (*wafEngine) Name() string       { return "coraza" }
 func (*wafEngine) RequiresBody() bool { return true }
 
+// InspectsResponse implements engine.ResponseInspector: Coraza runs response-phase
+// rules (phase 3/4), so its policies must keep the ext_proc response phase enabled.
+func (*wafEngine) InspectsResponse() bool { return true }
+
 // Close drops the reference to the compiled WAF so its rule set (which can be
 // large) becomes eligible for GC and any later Inspect fails fast rather than
 // running with stale state. The atomic store makes it safe even if it races a

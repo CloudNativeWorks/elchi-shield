@@ -191,7 +191,7 @@ func (pr *Processor) onRequestHeaders(ctx context.Context, tx *pipeline.Transact
 	// No policy matched (default allow) or mode off → terminal allow.
 	if tx.Policy == nil || !tx.Policy.Enforcing() {
 		pr.finish(ctx, tx, d, "request_headers", start)
-		return requestHeadersContinue(nil)
+		return requestHeadersContinue(requestMode(tx.Policy, false))
 	}
 
 	pp, perr := pr.policyPipelines(tx.Policy)
@@ -212,12 +212,34 @@ func (pr *Processor) onRequestHeaders(ctx context.Context, tx *pipeline.Transact
 			if bd := pr.inspectBufferedBody(ctx, tx, start); bd != nil && bd.IsBlock() {
 				return immediateResponse(bd)
 			}
-			return requestHeadersContinue(nil)
+			return requestHeadersContinue(requestMode(tx.Policy, false))
 		}
-		return requestHeadersContinue(&procmodev3.ProcessingMode{RequestBodyMode: procmodev3.ProcessingMode_BUFFERED})
+		return requestHeadersContinue(requestMode(tx.Policy, true))
 	}
 	pr.finish(ctx, tx, d, "request_headers", start) // terminal allow at headers
-	return requestHeadersContinue(nil)
+	return requestHeadersContinue(requestMode(tx.Policy, false))
+}
+
+// requestMode builds the ModeOverride for the request-headers response: request a
+// BUFFERED request body when a body-phase check needs it, and SKIP the response
+// phase when the policy inspects only the request — eliminating a wasted ext_proc
+// round-trip per request. Unset header modes default to DEFAULT (use the static
+// Envoy config), so we set ResponseHeaderMode only when we actually want to skip
+// it; a response-inspecting policy leaves it at the static SEND.
+func requestMode(p *policy.CompiledPolicy, needBody bool) *procmodev3.ProcessingMode {
+	skipResp := !p.NeedsResponseInspection()
+	if !needBody && !skipResp {
+		return nil // nothing to override → keep the static processing mode
+	}
+	m := &procmodev3.ProcessingMode{}
+	if needBody {
+		m.RequestBodyMode = procmodev3.ProcessingMode_BUFFERED
+	}
+	if skipResp {
+		m.ResponseHeaderMode = procmodev3.ProcessingMode_SKIP
+		m.ResponseBodyMode = procmodev3.ProcessingMode_NONE
+	}
+	return m
 }
 
 // appendBody buffers chunk for inspection, charging the shared in-flight body

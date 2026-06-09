@@ -11,6 +11,7 @@ import (
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	procmodev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
 
@@ -168,6 +169,16 @@ func isImmediate(r *extprocv3.ProcessingResponse) bool {
 	return ok
 }
 
+// requestsBody reports whether the response asks Envoy to buffer the request body.
+func requestsBody(r *extprocv3.ProcessingResponse) bool {
+	return r.GetModeOverride().GetRequestBodyMode() == procmodev3.ProcessingMode_BUFFERED
+}
+
+// skipsResponse reports whether the response tells Envoy to skip the response phase.
+func skipsResponse(r *extprocv3.ProcessingResponse) bool {
+	return r.GetModeOverride().GetResponseHeaderMode() == procmodev3.ProcessingMode_SKIP
+}
+
 func TestProcessorBlocksForbiddenHeader(t *testing.T) {
 	pr := buildProcessor(t)
 	out := run(t, pr, reqHeaders(":authority", "api.example.com", ":path", "/x", ":method", "GET", "X-Debug", "1"))
@@ -190,8 +201,12 @@ func TestProcessorAllowsCleanRequest(t *testing.T) {
 	if !ok || rh.RequestHeaders.Response.Status != extprocv3.CommonResponse_CONTINUE {
 		t.Fatalf("expected headers continue, got %#v", out[0])
 	}
-	if out[0].ModeOverride != nil {
+	if requestsBody(out[0]) {
 		t.Fatal("clean request needing no body should not request body")
+	}
+	// A request-only policy skips the response phase (saves an ext_proc round-trip).
+	if !skipsResponse(out[0]) {
+		t.Fatal("request-only policy should tell Envoy to skip the response phase")
 	}
 }
 
@@ -365,7 +380,7 @@ func TestProcessorHeaderOnlyEngineAllowsNoBodyRequest(t *testing.T) {
 	out := run(t, pr, reqHeaders(":authority", "api.example.com", ":path", "/x", ":method", "GET", "authorization", "Bearer "+token))
 	// Whether the (hand-built) token validates or not, the key invariant is the
 	// same: a header-only engine never requests body buffering.
-	if len(out) >= 1 && out[0].ModeOverride != nil {
+	if len(out) >= 1 && requestsBody(out[0]) {
 		t.Fatal("header-only engine must not request body buffering")
 	}
 }
@@ -395,7 +410,7 @@ func TestProcessorEmptyBodyOnHeadersRunsBodyInspection(t *testing.T) {
 		t.Fatalf("expected a single headers response, got %d", len(out))
 	}
 	// Must NOT ask Envoy to buffer a body that will never arrive.
-	if out[0].ModeOverride != nil {
+	if requestsBody(out[0]) {
 		t.Fatal("end_of_stream on headers must not request a (never-coming) body")
 	}
 	// Empty body on require_json is allowed (continue), not blocked.

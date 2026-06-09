@@ -161,6 +161,24 @@ func (p *CompiledPolicy) Blocking() bool { return p.Mode == config.ModeBlock }
 // except mode off).
 func (p *CompiledPolicy) Enforcing() bool { return p.Mode != config.ModeOff }
 
+// NeedsResponseInspection reports whether this policy inspects the HTTP response
+// (response-body checks, DLP on the response, or a response-inspecting engine
+// like Coraza). When false, the server tells Envoy to SKIP the response phase,
+// eliminating a wasted ext_proc round-trip per request. Conservative by
+// construction: anything that could touch the response keeps the phase enabled.
+func (p *CompiledPolicy) NeedsResponseInspection() bool {
+	if p == nil || !p.Enforcing() {
+		return false
+	}
+	if p.InspectResponseBody {
+		return true
+	}
+	if dlp := p.Checks.DLP; dlp != nil && dlp.OnResponse {
+		return true
+	}
+	return p.Engines.InspectsResponse()
+}
+
 // Shadowing reports whether the policy is in shadow mode.
 func (p *CompiledPolicy) Shadowing() bool { return p.Mode == config.ModeShadow }
 

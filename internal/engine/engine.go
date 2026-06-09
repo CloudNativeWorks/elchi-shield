@@ -113,6 +113,28 @@ func (s *Set) RequiresBody() bool {
 	return false
 }
 
+// ResponseInspector is implemented by an engine that inspects the RESPONSE
+// direction (e.g. the Coraza WAF response phase). Engines that don't implement it
+// are treated as request-only, so the server can tell Envoy to skip the response
+// phase for their policies (saving an ext_proc round-trip). A new response-
+// inspecting engine MUST implement this to keep its response inspection.
+type ResponseInspector interface {
+	InspectsResponse() bool
+}
+
+// InspectsResponse reports whether any engine in the set inspects the response.
+func (s *Set) InspectsResponse() bool {
+	if s == nil {
+		return false
+	}
+	for _, e := range s.engines {
+		if ri, ok := e.(ResponseInspector); ok && ri.InspectsResponse() {
+			return true
+		}
+	}
+	return false
+}
+
 // HasHeaderEngines reports whether any engine can run at header time (does not
 // require the body). Such engines run in the header phase so a header-only
 // policy (e.g. JWT validation) never forces the body to be buffered.
