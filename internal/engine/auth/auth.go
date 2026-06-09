@@ -32,9 +32,17 @@ type ReplayCache struct {
 	shards [numShards]replayShard
 }
 
+// replayShard keeps two generations of seen-nonces. When the current generation
+// fills, it rotates to prev and a fresh current is started (rather than wiping
+// everything). This bounds memory to ~2×maxKeysPerShard while ensuring a recorded
+// nonce survives at least one full generation: an attacker must flood TWO full
+// generations of distinct same-shard nonces within the TTL to evict a victim's
+// nonce and replay a captured request — versus a single wipe instantly forgetting
+// every recent nonce.
 type replayShard struct {
 	mu   sync.Mutex
-	seen map[string]time.Time // nonce → expiry
+	cur  map[string]time.Time // nonce → expiry (current generation)
+	prev map[string]time.Time // previous generation (fallback before rotation)
 }
 
 // NewReplayCache builds a replay cache whose entries live for ttl. now is
@@ -45,7 +53,7 @@ func NewReplayCache(ttl time.Duration, now func() time.Time) *ReplayCache {
 	}
 	c := &ReplayCache{ttl: ttl, now: now, seed: maphash.MakeSeed()}
 	for i := range c.shards {
-		c.shards[i].seen = make(map[string]time.Time)
+		c.shards[i].cur = make(map[string]time.Time)
 	}
 	return c
 }
@@ -64,12 +72,21 @@ func (c *ReplayCache) SeenBefore(nonce string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if exp, ok := s.seen[nonce]; ok && now.Before(exp) {
+	if exp, ok := s.cur[nonce]; ok && now.Before(exp) {
 		return true
 	}
-	if len(s.seen) >= maxKeysPerShard {
-		s.seen = make(map[string]time.Time, maxKeysPerShard/2)
+	if exp, ok := s.prev[nonce]; ok && now.Before(exp) {
+		// Promote into the current generation so it isn't lost on the next rotation
+		// while still within its TTL.
+		s.cur[nonce] = exp
+		return true
 	}
-	s.seen[nonce] = now.Add(c.ttl)
+	if len(s.cur) >= maxKeysPerShard {
+		// Rotate generations instead of wiping: the previous generation stays
+		// available as a fallback, so recently-recorded nonces are not forgotten.
+		s.prev = s.cur
+		s.cur = make(map[string]time.Time, maxKeysPerShard/2)
+	}
+	s.cur[nonce] = now.Add(c.ttl)
 	return false
 }
