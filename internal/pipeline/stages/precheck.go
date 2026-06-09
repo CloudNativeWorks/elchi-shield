@@ -8,8 +8,6 @@ package stages
 import (
 	"context"
 	"net/netip"
-	"net/url"
-	"path"
 	"strings"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
@@ -147,12 +145,20 @@ func (policyResolve) Process(_ context.Context, tx *pipeline.Transaction) pipeli
 	if tx.Snapshot == nil {
 		return pipeline.Continue()
 	}
-	tx.Policy = tx.Snapshot.Resolver().Resolve(&policy.Input{
-		ListenerID: tx.ListenerID,
-		Host:       tx.Host,
-		// Match on the path component only; an attacker must not dodge an exact/
-		// regex path policy by appending a query string.
-		Path:        matchPath(tx.Path),
+	r := tx.Snapshot.Resolver()
+	// Match on the path component only; an attacker must not dodge an exact/regex
+	// path policy (or the exclude list) by appending a query string.
+	mp := matchPath(tx.Path)
+	// Exclude check first: an excluded path bypasses all inspection via the shared
+	// mode-off policy, regardless of the default posture.
+	if r.Excluded(mp) {
+		tx.Policy = policy.PassThroughPolicy()
+		return pipeline.Continue()
+	}
+	tx.Policy = r.Resolve(&policy.Input{
+		ListenerID:  tx.ListenerID,
+		Host:        tx.Host,
+		Path:        mp,
 		Method:      tx.Method,
 		ContentType: tx.ContentType,
 		Headers:     tx,
@@ -162,40 +168,12 @@ func (policyResolve) Process(_ context.Context, tx *pipeline.Transaction) pipeli
 
 // NormalizePath exposes the route-matching path normalization for introspection
 // (the /policyz explainer) so it reports the same resolution the request path uses.
-func NormalizePath(p string) string { return matchPath(p) }
+func NormalizePath(p string) string { return matcher.NormalizePath(p) }
 
-// matchPath returns the normalized path used for route matching: the query is
-// stripped, the path is percent-decoded once, and dot-segments / duplicate
-// slashes are collapsed. This prevents trivial evasion of an exact/prefix/regex
-// path policy via encodings or traversal (e.g. "/%61dmin", "/foo/../admin",
-// "//admin") that a downstream server would normalize to the same resource.
-// The original tx.Path is preserved for audit/logging.
-func matchPath(raw string) string {
-	p := raw
-	if i := strings.IndexByte(p, '?'); i >= 0 {
-		p = p[:i]
-	}
-	if i := strings.IndexByte(p, '#'); i >= 0 {
-		p = p[:i]
-	}
-	// Percent-decode once (best effort: keep the raw form if it is malformed).
-	if dec, err := url.PathUnescape(p); err == nil {
-		p = dec
-	}
-	if p == "" {
-		return raw
-	}
-	// Collapse "." / ".." / "//". path.Clean drops a trailing slash, so restore it
-	// to keep prefix semantics (a "/v1/" prefix should still match "/v1/").
-	cleaned := path.Clean(p)
-	if cleaned == "." {
-		cleaned = "/"
-	}
-	if strings.HasSuffix(p, "/") && !strings.HasSuffix(cleaned, "/") {
-		cleaned += "/"
-	}
-	return cleaned
-}
+// matchPath returns the normalized path used for route/exclude matching (query
+// stripped, percent-decoded once, dot-segments/duplicate slashes collapsed). The
+// original tx.Path is preserved for audit/logging. See matcher.NormalizePath.
+func matchPath(raw string) string { return matcher.NormalizePath(raw) }
 
 // fastPreChecks runs the cheap, body-free header checks. It short-circuits on the
 // first violation; the executor maps the deny through the policy mode so

@@ -26,6 +26,9 @@ type MergedConfig struct {
 	Domains []MergedDomain
 	// Sources lists the contributing files in sorted order.
 	Sources []string
+	// Excludes is the union of every file's `spec.exclude` — request paths that
+	// bypass all inspection (deduplicated, deterministic order).
+	Excludes []string
 }
 
 // Merge folds parsed files into a single MergedConfig. Files are processed in
@@ -38,6 +41,7 @@ func Merge(files []ParsedFile) *MergedConfig {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	out := &MergedConfig{}
+	seenExclude := map[string]struct{}{}
 	for _, pf := range sorted {
 		if pf.File == nil {
 			continue
@@ -46,6 +50,12 @@ func Merge(files []ParsedFile) *MergedConfig {
 		out.FileDefaults = overlaySpec(out.FileDefaults, pf.File.Spec.Defaults)
 		for _, d := range pf.File.Spec.Domains {
 			out.Domains = append(out.Domains, MergedDomain{Domain: d, Source: pf.Name})
+		}
+		for _, ex := range pf.File.Spec.Exclude {
+			if _, dup := seenExclude[ex]; !dup {
+				seenExclude[ex] = struct{}{}
+				out.Excludes = append(out.Excludes, ex)
+			}
 		}
 	}
 	return out

@@ -126,6 +126,9 @@ phase "Header checks"
 req GET /block-hdr "$AH" -H 'X-Debug: 1';   expect "forbidden header → 403" "$CODE" 403
 hashdr 'x-elchi-shield' && P "block carries x-elchi-shield marker" || F "missing x-elchi-shield marker"
 req GET /block-hdr "$AH";                    expect "no forbidden header → 200" "$CODE" 200
+# /exempt has a blocking route, but the top-level exclude bypasses inspection.
+req GET /exempt "$AH" -H 'X-Debug: 1';       expect "excluded path bypasses inspection → 200" "$CODE" 200
+req GET '/exempt?x=1' "$AH" -H 'X-Debug: 1'; expect "excluded path ignores query → 200" "$CODE" 200
 req GET /req-hdr "$AH";                        expect "required header missing → 403" "$CODE" 403
 req GET /req-hdr "$AH" -H 'X-Custom-Req: yes'; expect "required header present → 200" "$CODE" 200
 BIG=$(printf 'x%.0s' $(seq 1 300))   # 300 bytes > the 256 cap

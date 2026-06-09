@@ -132,6 +132,31 @@ func TestValidateDuplicateDomainAcrossFiles(t *testing.T) {
 	}
 }
 
+func TestValidateDomainHostOrListener(t *testing.T) {
+	base := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  domains:\n"
+	// Neither host nor listener_id → rejected.
+	neither := base + "    - policy: {mode: block}\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": neither})); err == nil || !strings.Contains(err.Error(), "host or listener_id") {
+		t.Fatalf("a domain with neither host nor listener_id must be rejected, got %v", err)
+	}
+	// listener_id only (no host) → accepted.
+	listenerOnly := base + "    - listener_id: lst-1\n      policy: {mode: block}\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": listenerOnly})); err != nil {
+		t.Fatalf("a listener-only domain should be accepted, got %v", err)
+	}
+}
+
+func TestValidateExcludePath(t *testing.T) {
+	base := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  exclude: [\"healthz\"]\n  domains:\n    - host: a.com\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": base})); err == nil || !strings.Contains(err.Error(), "exclude") {
+		t.Fatalf("a relative exclude path must be rejected, got %v", err)
+	}
+	ok := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  exclude: [\"/healthz\", \"/metrics\"]\n  domains:\n    - host: a.com\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": ok})); err != nil {
+		t.Fatalf("absolute exclude paths should be accepted, got %v", err)
+	}
+}
+
 func TestValidateDuplicateRoute(t *testing.T) {
 	doc := `
 apiVersion: sentinel.elchi.io/v1

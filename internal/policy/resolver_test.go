@@ -66,6 +66,43 @@ func TestResolveListenerScopedBeatsUnscoped(t *testing.T) {
 	}
 }
 
+func TestResolveListenerOnlyDomain(t *testing.T) {
+	r := mustCompile(t, merged(
+		config.Domain{Host: "api.example.com"}, // host-only
+		config.Domain{ListenerID: "L1"},        // listener-only: any host on L1
+	))
+	// A host not covered by a host-domain falls to the listener-only domain on L1.
+	got := r.Resolve(in("other.com", "/", "GET", "L1"))
+	if got == nil || !strings.HasPrefix(got.ID, "|L1|") {
+		t.Fatalf("listener-only domain should match any host on L1, got %v", got)
+	}
+	// A host-matching domain beats the listener-only one, even on L1.
+	got = r.Resolve(in("api.example.com", "/", "GET", "L1"))
+	if got == nil || !strings.HasPrefix(got.ID, "api.example.com|") {
+		t.Fatalf("host domain should beat listener-only, got %v", got)
+	}
+	// The listener-only L1 domain must not match a different listener.
+	if got = r.Resolve(in("other.com", "/", "GET", "L2")); got != nil {
+		t.Fatalf("listener-only L1 must not match L2, got %v", got)
+	}
+}
+
+func TestResolveExclude(t *testing.T) {
+	cfg := merged(config.Domain{Host: "api.example.com"})
+	cfg.Excludes = []string{"/healthz", "/metrics"}
+	r := mustCompile(t, cfg)
+	if !r.Excluded("/healthz") || !r.Excluded("/metrics") {
+		t.Fatal("configured exclude paths should report excluded")
+	}
+	if r.Excluded("/api") {
+		t.Fatal("a non-excluded path must not be excluded")
+	}
+	// PassThroughPolicy is mode-off (terminal allow, no inspection).
+	if PassThroughPolicy().Enforcing() {
+		t.Fatal("the exclude pass-through policy must be non-enforcing (mode off)")
+	}
+}
+
 func TestResolvePathPrecedence(t *testing.T) {
 	d := config.Domain{
 		Host: "api.example.com",

@@ -25,9 +25,17 @@ func Compile(cfg *config.MergedConfig) (*Resolver, error) {
 	for _, md := range cfg.Domains {
 		d := md.Domain
 
-		host, err := matcher.CompileHost(d.Host)
-		if err != nil {
-			return nil, fmt.Errorf("%s: domain %q: %w", md.Source, d.Host, err)
+		// A domain is selected by host and/or listener_id (validation guarantees at
+		// least one). With no host, it is listener-only: it matches any host on its
+		// listener, so it carries no host matcher.
+		hostAny := d.Host == ""
+		var host matcher.Host
+		if !hostAny {
+			h, err := matcher.CompileHost(d.Host)
+			if err != nil {
+				return nil, fmt.Errorf("%s: domain %q: %w", md.Source, d.Host, err)
+			}
+			host = h
 		}
 
 		domainResolved := config.Resolve(base, cfg.FileDefaults, d.Policy)
@@ -37,8 +45,9 @@ func Compile(cfg *config.MergedConfig) (*Resolver, error) {
 		}
 		cd := &compiledDomain{
 			host:          host,
-			hostExact:     host.Exact(),
+			hostExact:     !hostAny && host.Exact(),
 			listenerID:    d.ListenerID,
+			hostAny:       hostAny,
 			defaultPolicy: domainPolicy,
 		}
 
@@ -67,11 +76,23 @@ func Compile(cfg *config.MergedConfig) (*Resolver, error) {
 
 		sortRoutes(cd.routes)
 
-		if cd.hostExact {
+		switch {
+		case hostAny:
+			r.listenerOnly = append(r.listenerOnly, cd)
+		case cd.hostExact:
 			key := matcher.NormalizeHost(d.Host)
 			r.exact[key] = append(r.exact[key], cd)
-		} else {
+		default:
 			r.wildcard = append(r.wildcard, cd)
+		}
+	}
+
+	// Inspection-bypass paths, normalized the same way request paths are so an
+	// exact entry matches regardless of query string / encoding.
+	if len(cfg.Excludes) > 0 {
+		r.excludes = make(map[string]struct{}, len(cfg.Excludes))
+		for _, ex := range cfg.Excludes {
+			r.excludes[matcher.NormalizePath(ex)] = struct{}{}
 		}
 	}
 

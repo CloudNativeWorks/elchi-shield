@@ -58,11 +58,21 @@ func validateFile(file string, f *File) []error {
 
 	errs = append(errs, validateSpec(file, "spec.defaults", f.Spec.Defaults)...)
 
+	for _, ex := range f.Spec.Exclude {
+		if strings.TrimSpace(ex) == "" || !strings.HasPrefix(ex, "/") {
+			add("spec.exclude", fmt.Errorf("exclude path %q must be a non-empty absolute path (start with '/')", ex))
+		}
+	}
+
 	for di, d := range f.Spec.Domains {
 		dp := fmt.Sprintf("spec.domains[%d]", di)
-		if strings.TrimSpace(d.Host) == "" {
-			add(dp+".host", errors.New("host is required"))
-		} else if !hostRe.MatchString(d.Host) {
+		// A domain is selected by host and/or listener_id — at least one is required.
+		// host may be empty when listener_id pins the domain to a listener (then it
+		// matches any host on that listener).
+		switch {
+		case strings.TrimSpace(d.Host) == "" && strings.TrimSpace(d.ListenerID) == "":
+			add(dp, errors.New("host or listener_id is required (at least one)"))
+		case strings.TrimSpace(d.Host) != "" && !hostRe.MatchString(d.Host):
 			add(dp+".host", fmt.Errorf("invalid host %q", d.Host))
 		}
 		errs = append(errs, validateSpec(file, dp+".policy", d.Policy)...)

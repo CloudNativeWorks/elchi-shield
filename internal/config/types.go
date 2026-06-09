@@ -114,6 +114,10 @@ type Metadata struct {
 type Spec struct {
 	Defaults PolicySpec `yaml:"defaults" json:"defaults"`
 	Domains  []Domain   `yaml:"domains" json:"domains"`
+	// Exclude lists request paths that bypass ALL inspection (a cheap exact-match,
+	// query-stripped, checked before policy resolution). Use it for health checks,
+	// metrics scrapes, or static assets that never need a WAF decision.
+	Exclude []string `yaml:"exclude" json:"exclude"`
 }
 
 // Domain scopes a set of routes to a host and (optionally) a listener.

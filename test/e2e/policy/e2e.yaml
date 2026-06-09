@@ -12,6 +12,9 @@ spec:
     timeout: 500ms
     max_request_body_bytes: 1048576
 
+  # Paths that bypass ALL inspection (checked before policy resolution).
+  exclude: ["/exempt"]
+
   domains:
     # ---- Main host: unmatched paths fall to this domain default (off → allow). ----
     - host: "api.example.com"
@@ -27,6 +30,9 @@ spec:
 
         # Header checks (fast_pre_checks)
         - match: { path_prefix: "/block-hdr" }
+          policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
+        # /exempt has a blocking route, but the top-level exclude bypasses it.
+        - match: { path_prefix: "/exempt" }
           policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
         - match: { path_prefix: "/req-hdr" }
           policy: { mode: block, checks: { headers: { required: ["X-Custom-Req"] } } }
