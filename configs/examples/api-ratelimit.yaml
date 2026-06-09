@@ -20,8 +20,7 @@ spec:
     fail_mode: fail_open
 
   domains:
-    - host: "gateway.example.com"
-      listener_id: "lst-public-443"
+    - hosts: ["gateway.example.com"]
       routes:
         # Per-IP limit: 100 req/s sustained, bursts up to 200.
         - match:

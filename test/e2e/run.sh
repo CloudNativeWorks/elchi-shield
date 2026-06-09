@@ -375,7 +375,7 @@ kind: SecurityPolicy
 metadata: { name: hot }
 spec:
   domains:
-    - host: "reload.local"
+    - hosts: ["reload.local"]
       policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
 YAML
 for _ in $(seq 1 20); do v2=$(curl -s "http://${HTTP}/configz" | grep '"version"' | head -1); [ "$v2" != "$v1" ] && break; sleep 0.25; done

@@ -13,7 +13,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: ` + host + `
+    - hosts: ["` + host + `"]
       routes:
         - match: {path_prefix: /v1/}
           policy: {mode: block}
@@ -25,7 +25,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_regex: "([bad"}
           policy: {mode: block}

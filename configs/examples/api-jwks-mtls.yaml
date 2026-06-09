@@ -12,8 +12,7 @@ spec:
     fail_mode: fail_close
 
   domains:
-    - host: "secure.example.com"
-      listener_id: "lst-secure-443"
+    - hosts: ["mtls.example.com"]
       routes:
         # OIDC bearer auth against a remote JWKS endpoint. Keys are cached and
         # refreshed in the background; RS256/ES256 are pinned (blocks alg:none /

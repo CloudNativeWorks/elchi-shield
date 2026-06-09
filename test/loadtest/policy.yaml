@@ -13,7 +13,7 @@ spec:
     max_request_body_bytes: 1048576
 
   domains:
-    - host: "api.example.com"
+    - hosts: ["api.example.com"]
       policy: { mode: off }          # unmatched paths pass straight through
       routes:
         # Pure passthrough (mode off): the floor — gRPC + prelude only, no checks.

@@ -402,7 +402,7 @@ func TestDefaultRequestPipelineEndToEnd(t *testing.T) {
 	mode := config.ModeBlock
 	forbidden := config.HeaderChecks{Forbidden: []string{"X-Debug"}}
 	dom := func(m config.Mode) config.Domain {
-		return config.Domain{Host: "api.example.com", Routes: []config.Route{{
+		return config.Domain{Hosts: []string{"api.example.com"}, Routes: []config.Route{{
 			Match:  config.Match{PathPrefix: "/"},
 			Policy: config.PolicySpec{Mode: &m, Checks: config.Checks{Headers: &forbidden}},
 		}}}

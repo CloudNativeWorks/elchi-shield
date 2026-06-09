@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
 	"github.com/cloudnativeworks/elchi-shield/internal/matcher"
@@ -25,45 +26,44 @@ func Compile(cfg *config.MergedConfig) (*Resolver, error) {
 	for _, md := range cfg.Domains {
 		d := md.Domain
 
-		// A domain is selected by host and/or listener_id (validation guarantees at
-		// least one). With no host, it is listener-only: it matches any host on its
-		// listener, so it carries no host matcher.
-		hostAny := d.Host == ""
-		var host matcher.Host
-		if !hostAny {
-			h, err := matcher.CompileHost(d.Host)
+		// A domain matches one or more hosts (validation guarantees at least one).
+		hosts := make([]matcher.Host, 0, len(d.Hosts))
+		allExact := true
+		for _, h := range d.Hosts {
+			ch, err := matcher.CompileHost(h)
 			if err != nil {
-				return nil, fmt.Errorf("%s: domain %q: %w", md.Source, d.Host, err)
+				return nil, fmt.Errorf("%s: domain %q: %w", md.Source, h, err)
 			}
-			host = h
+			hosts = append(hosts, ch)
+			if !ch.Exact() {
+				allExact = false
+			}
 		}
 
+		id := domainID(d)
 		domainResolved := config.Resolve(base, cfg.FileDefaults, d.Policy)
-		domainPolicy, err := compilePolicy(domainID(d), domainResolved, ec)
+		domainPolicy, err := compilePolicy(id, domainResolved, ec)
 		if err != nil {
-			return nil, fmt.Errorf("%s: domain %q: %w", md.Source, d.Host, err)
+			return nil, fmt.Errorf("%s: domain %q: %w", md.Source, id, err)
 		}
 		cd := &compiledDomain{
-			host:          host,
-			hostExact:     !hostAny && host.Exact(),
-			listenerID:    d.ListenerID,
-			hostAny:       hostAny,
+			hosts:         hosts,
 			defaultPolicy: domainPolicy,
 		}
 
 		for ri, rt := range d.Routes {
 			path, err := matcher.CompilePath(rt.Match.PathExact, rt.Match.PathPrefix, rt.Match.PathRegex)
 			if err != nil {
-				return nil, fmt.Errorf("%s: domain %q route %d: %w", md.Source, d.Host, ri, err)
+				return nil, fmt.Errorf("%s: domain %q route %d: %w", md.Source, id, ri, err)
 			}
 			headers, err := matcher.CompileHeaders(rt.Match.Headers)
 			if err != nil {
-				return nil, fmt.Errorf("%s: domain %q route %d: %w", md.Source, d.Host, ri, err)
+				return nil, fmt.Errorf("%s: domain %q route %d: %w", md.Source, id, ri, err)
 			}
 			routeResolved := config.Resolve(base, cfg.FileDefaults, d.Policy, rt.Policy)
 			routePolicy, err := compilePolicy(routeID(d, ri), routeResolved, ec)
 			if err != nil {
-				return nil, fmt.Errorf("%s: domain %q route %d: %w", md.Source, d.Host, ri, err)
+				return nil, fmt.Errorf("%s: domain %q route %d: %w", md.Source, id, ri, err)
 			}
 			cd.routes = append(cd.routes, &compiledRoute{
 				path:        path,
@@ -76,13 +76,16 @@ func Compile(cfg *config.MergedConfig) (*Resolver, error) {
 
 		sortRoutes(cd.routes)
 
-		switch {
-		case hostAny:
-			r.listenerOnly = append(r.listenerOnly, cd)
-		case cd.hostExact:
-			key := matcher.NormalizeHost(d.Host)
-			r.exact[key] = append(r.exact[key], cd)
-		default:
+		// Index by host: a domain whose hosts are ALL exact goes in the exact map
+		// (O(1) lookup) under each host; a domain with any wildcard/catch-all host
+		// goes in the scanned wildcard list (which checks all its hosts, including
+		// any exact ones), so no domain is listed twice.
+		if allExact {
+			for _, h := range d.Hosts {
+				key := matcher.NormalizeHost(h)
+				r.exact[key] = append(r.exact[key], cd)
+			}
+		} else {
 			r.wildcard = append(r.wildcard, cd)
 		}
 	}
@@ -125,19 +128,13 @@ func sortRoutes(routes []*compiledRoute) {
 	})
 }
 
+// domainScope joins a domain's hosts into a stable identifier prefix.
+func domainScope(d config.Domain) string { return strings.Join(d.Hosts, ",") }
+
 // domainID builds a stable identifier for a domain's default policy.
-func domainID(d config.Domain) string {
-	if d.ListenerID != "" {
-		return d.Host + "|" + d.ListenerID + "|*"
-	}
-	return d.Host + "|*"
-}
+func domainID(d config.Domain) string { return domainScope(d) + "|*" }
 
 // routeID builds a stable identifier for a route's policy.
 func routeID(d config.Domain, idx int) string {
-	scope := d.Host
-	if d.ListenerID != "" {
-		scope += "|" + d.ListenerID
-	}
-	return fmt.Sprintf("%s|route[%d]", scope, idx)
+	return fmt.Sprintf("%s|route[%d]", domainScope(d), idx)
 }

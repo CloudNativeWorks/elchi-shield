@@ -12,8 +12,7 @@ spec:
     fail_mode: fail_close   # auth failures should fail closed
 
   domains:
-    - host: "auth.example.com"
-      listener_id: "lst-auth-443"
+    - hosts: ["auth.example.com"]
       routes:
         # API-key auth: keys are stored hashed (sha256) at rest. Provide either a
         # raw `key` (hashed at load) or a precomputed `sha256`. Optional

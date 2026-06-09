@@ -10,7 +10,7 @@ import (
 
 func cfg(host string) *config.MergedConfig {
 	return &config.MergedConfig{
-		Domains: []config.MergedDomain{{Domain: config.Domain{Host: host}, Source: "a.yaml"}},
+		Domains: []config.MergedDomain{{Domain: config.Domain{Hosts: []string{host}}, Source: "a.yaml"}},
 		Sources: []string{"a.yaml"},
 	}
 }

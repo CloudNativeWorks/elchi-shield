@@ -31,8 +31,7 @@ spec:
     mode: block
     timeout: 50ms
   domains:
-    - host: api.example.com
-      listener_id: l1
+    - hosts: ["api.example.com"]
       routes:
         - match:
             path_prefix: /v1/
@@ -49,7 +48,7 @@ func TestParseValidYAML(t *testing.T) {
 	if f.APIVersion != APIVersionV1 || f.Kind != KindSecurityPolicy {
 		t.Fatalf("envelope mismatch: %+v", f)
 	}
-	if len(f.Spec.Domains) != 1 || f.Spec.Domains[0].Host != "api.example.com" {
+	if len(f.Spec.Domains) != 1 || len(f.Spec.Domains[0].Hosts) == 0 || f.Spec.Domains[0].Hosts[0] != "api.example.com" {
 		t.Fatalf("domains wrong: %+v", f.Spec.Domains)
 	}
 	r := f.Spec.Domains[0].Routes[0]
@@ -70,12 +69,12 @@ func TestParseStrictRejectsUnknownField(t *testing.T) {
 
 func TestParseJSON(t *testing.T) {
 	doc := `{"apiVersion":"sentinel.elchi.io/v1","kind":"SecurityPolicy",
-	"metadata":{"name":"j"},"spec":{"domains":[{"host":"a.com"}]}}`
+	"metadata":{"name":"j"},"spec":{"domains":[{"hosts":["a.com"]}]}}`
 	f, err := Parse("t.json", []byte(doc))
 	if err != nil {
 		t.Fatalf("Parse json: %v", err)
 	}
-	if f.Spec.Domains[0].Host != "a.com" {
+	if len(f.Spec.Domains[0].Hosts) == 0 || f.Spec.Domains[0].Hosts[0] != "a.com" {
 		t.Fatalf("json domain wrong: %+v", f.Spec.Domains)
 	}
 }
@@ -124,34 +123,39 @@ func TestLoadInvalidApiVersion(t *testing.T) {
 func TestValidateDuplicateDomainAcrossFiles(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"a.yaml": validDoc,
-		"b.yaml": validDoc, // identical host+listener
+		"b.yaml": validDoc, // identical host
 	})
 	_, err := Load(dir)
-	if err == nil || !strings.Contains(err.Error(), "duplicate domain") {
-		t.Fatalf("want duplicate domain error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "duplicate host") {
+		t.Fatalf("want duplicate host error, got %v", err)
 	}
 }
 
-func TestValidateDomainHostOrListener(t *testing.T) {
+func TestValidateDomainHosts(t *testing.T) {
 	base := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  domains:\n"
-	// Neither host nor listener_id → rejected.
-	neither := base + "    - policy: {mode: block}\n"
-	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": neither})); err == nil || !strings.Contains(err.Error(), "host or listener_id") {
-		t.Fatalf("a domain with neither host nor listener_id must be rejected, got %v", err)
+	// No hosts → rejected.
+	none := base + "    - policy: {mode: block}\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": none})); err == nil || !strings.Contains(err.Error(), "at least one host") {
+		t.Fatalf("a domain with no hosts must be rejected, got %v", err)
 	}
-	// listener_id only (no host) → accepted.
-	listenerOnly := base + "    - listener_id: lst-1\n      policy: {mode: block}\n"
-	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": listenerOnly})); err != nil {
-		t.Fatalf("a listener-only domain should be accepted, got %v", err)
+	// Multiple hosts incl. wildcard and catch-all → accepted.
+	multi := base + "    - hosts: [\"a.com\", \"*.b.com\", \"*\"]\n      policy: {mode: block}\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": multi})); err != nil {
+		t.Fatalf("a multi-host domain (incl. wildcard/catch-all) should be accepted, got %v", err)
+	}
+	// Invalid host entry → rejected.
+	bad := base + "    - hosts: [\"good.com\", \"bad host!\"]\n      policy: {mode: block}\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": bad})); err == nil || !strings.Contains(err.Error(), "invalid host") {
+		t.Fatalf("an invalid host entry must be rejected, got %v", err)
 	}
 }
 
 func TestValidateExcludePath(t *testing.T) {
-	base := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  exclude: [\"healthz\"]\n  domains:\n    - host: a.com\n"
+	base := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  exclude: [\"healthz\"]\n  domains:\n    - hosts: [a.com]\n"
 	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": base})); err == nil || !strings.Contains(err.Error(), "exclude") {
 		t.Fatalf("a relative exclude path must be rejected, got %v", err)
 	}
-	ok := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  exclude: [\"/healthz\", \"/metrics\"]\n  domains:\n    - host: a.com\n"
+	ok := "apiVersion: sentinel.elchi.io/v1\nkind: SecurityPolicy\nmetadata: {name: t}\nspec:\n  exclude: [\"/healthz\", \"/metrics\"]\n  domains:\n    - hosts: [a.com]\n"
 	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": ok})); err != nil {
 		t.Fatalf("absolute exclude paths should be accepted, got %v", err)
 	}
@@ -164,7 +168,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy: {mode: block}
@@ -194,7 +198,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy:
@@ -228,7 +232,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /}
           policy:
@@ -254,7 +258,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /}
           policy:
@@ -277,7 +281,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /}
           policy:
@@ -332,7 +336,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy:
@@ -358,7 +362,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy:
@@ -400,7 +404,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy:
@@ -438,7 +442,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy:
@@ -481,7 +485,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy:
@@ -532,7 +536,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /v1/}
           policy:

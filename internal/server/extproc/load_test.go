@@ -85,7 +85,7 @@ func reportThroughput(b *testing.B, start time.Time) {
 // BenchmarkProcessBaseline: no matching policy (default allow) — the pure
 // gRPC + pipeline-prelude overhead.
 func BenchmarkProcessBaseline(b *testing.B) {
-	pr := benchProcessor(b, config.Domain{Host: "api.example.com"})
+	pr := benchProcessor(b, config.Domain{Hosts: []string{"api.example.com"}})
 	client, cleanup := newBufServer(b, pr)
 	defer cleanup()
 	msg := reqHeaders(":authority", "other.com", ":path", "/x", ":method", "GET")
@@ -128,7 +128,7 @@ func oneRequestWithBody(b testing.TB, client extprocv3.ExternalProcessorClient, 
 func BenchmarkProcessRequestBody(b *testing.B) {
 	mode := config.ModeBlock
 	yes := true
-	pr := benchProcessor(b, config.Domain{Host: "api.example.com", Routes: []config.Route{{
+	pr := benchProcessor(b, config.Domain{Hosts: []string{"api.example.com"}, Routes: []config.Route{{
 		Match: config.Match{PathPrefix: "/"},
 		Policy: config.PolicySpec{
 			Mode:               &mode,
@@ -155,7 +155,7 @@ func BenchmarkProcessRequestBody(b *testing.B) {
 // clean request (allowed) — the common enforced path.
 func BenchmarkProcessHeaderChecks(b *testing.B) {
 	mode := config.ModeBlock
-	pr := benchProcessor(b, config.Domain{Host: "api.example.com", Routes: []config.Route{{
+	pr := benchProcessor(b, config.Domain{Hosts: []string{"api.example.com"}, Routes: []config.Route{{
 		Match: config.Match{PathPrefix: "/"},
 		Policy: config.PolicySpec{Mode: &mode, Checks: config.Checks{Headers: &config.HeaderChecks{
 			Forbidden: []string{"X-Debug"}, Required: []string{"X-Request-Id"}, EnforceValidHost: true,

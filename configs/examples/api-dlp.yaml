@@ -15,8 +15,7 @@ spec:
     fail_mode: fail_close
 
   domains:
-    - host: "dlp.example.com"
-      listener_id: "lst-dlp-443"
+    - hosts: ["dlp.example.com"]
       routes:
         - match:
             path_prefix: "/"

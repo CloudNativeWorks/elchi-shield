@@ -6,13 +6,14 @@ import (
 	"strings"
 )
 
-// Host matches a request authority/Host. It supports an exact host and a single
-// leading-wildcard form ("*.example.com", matching one or more leading labels).
-// Matching is case-insensitive. Compiled once during config load; Match is
-// allocation-free.
+// Host matches a request authority/Host. It supports an exact host, a single
+// leading-wildcard form ("*.example.com", matching one or more leading labels),
+// and a bare "*" catch-all (matches any host). Matching is case-insensitive.
+// Compiled once during config load; Match is allocation-free.
 type Host struct {
-	exact  string // lowercased; set for exact matches
-	suffix string // lowercased ".example.com"; set for wildcard matches
+	exact    string // lowercased; set for exact matches
+	suffix   string // lowercased ".example.com"; set for wildcard matches
+	catchAll bool   // bare "*": matches any host (least specific)
 }
 
 // CompileHost compiles a host pattern. An empty pattern is rejected (callers
@@ -21,6 +22,9 @@ func CompileHost(pattern string) (Host, error) {
 	p := strings.ToLower(strings.TrimSpace(pattern))
 	if p == "" {
 		return Host{}, errors.New("empty host pattern")
+	}
+	if p == "*" {
+		return Host{catchAll: true}, nil
 	}
 	if rest, ok := strings.CutPrefix(p, "*."); ok {
 		rest = stripTrailingDot(rest)
@@ -34,6 +38,9 @@ func CompileHost(pattern string) (Host, error) {
 
 // Match reports whether host satisfies this matcher.
 func (h Host) Match(host string) bool {
+	if h.catchAll {
+		return true
+	}
 	host = stripTrailingDot(trimPort(stripUserinfo(host)))
 	if h.exact != "" {
 		return strings.EqualFold(host, h.exact)

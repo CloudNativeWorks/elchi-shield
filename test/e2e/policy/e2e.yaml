@@ -16,8 +16,8 @@ spec:
   exclude: ["/exempt"]
 
   domains:
-    # ---- Main host: unmatched paths fall to this domain default (off → allow). ----
-    - host: "api.example.com"
+    # ---- Main hosts: ["unmatched paths fall to this domain default (off → allow). ----"]
+    - hosts: ["api.example.com"]
       policy: { mode: off }          # domain default: allow unmatched paths
       routes:
         # Decision modes
@@ -298,10 +298,10 @@ spec:
                   block: ["private_key", "aws_access_key"]
                   redact: ["credit_card", "email", "ssn", "jwt"]
 
-    # ---- A different exact host: monitor only (off) → proves host-specific routing. ----
-    - host: "other.example.com"
+    # ---- A different exact hosts: ["monitor only (off) → proves host-specific routing. ----"]
+    - hosts: ["other.example.com"]
       policy: { mode: off }
 
-    # ---- Wildcard host: blocks X-Debug (exact api.example.com still beats it). ----
-    - host: "*.example.com"
+    # ---- Wildcard hosts: ["blocks X-Debug (exact api.example.com still beats it). ----"]
+    - hosts: ["*.example.com"]
       policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }

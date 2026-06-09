@@ -120,13 +120,13 @@ type Spec struct {
 	Exclude []string `yaml:"exclude" json:"exclude"`
 }
 
-// Domain scopes a set of routes to a host and (optionally) a listener.
+// Domain scopes a set of routes to one or more hosts.
 type Domain struct {
-	// Host is the request authority/Host this domain matches. Supports a single
-	// leading-wildcard form ("*.example.com") and exact hosts.
-	Host string `yaml:"host" json:"host"`
-	// ListenerID optionally narrows the domain to a specific Envoy listener.
-	ListenerID string `yaml:"listener_id" json:"listener_id"`
+	// Hosts are the request authorities/Hosts this domain matches (at least one
+	// required). Each entry is an exact host, a single leading-wildcard
+	// ("*.example.com"), or "*" (catch-all, matches any host). The domain matches
+	// if ANY entry matches; precedence uses the most-specific matching entry.
+	Hosts []string `yaml:"hosts" json:"hosts"`
 	// Policy is an optional domain-level override applied beneath file Defaults
 	// and above each route's policy.
 	Policy PolicySpec `yaml:"policy" json:"policy"`

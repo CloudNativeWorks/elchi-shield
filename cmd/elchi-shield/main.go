@@ -148,7 +148,6 @@ func explainPolicy(store *runtime.Store, catalog *stages.Catalog) httpserver.Pol
 			return httpserver.PolicyExplanation{Note: "no active config"}
 		}
 		p := res.Resolve(&policy.Input{
-			ListenerID:  q.Listener,
 			Host:        q.Host,
 			Path:        stages.NormalizePath(q.Path),
 			Method:      q.Method,

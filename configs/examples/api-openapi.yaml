@@ -13,8 +13,7 @@ spec:
     fail_mode: fail_close   # malformed/non-conforming requests fail closed
 
   domains:
-    - host: "contract.example.com"
-      listener_id: "lst-contract-443"
+    - hosts: ["contract.example.com"]
       routes:
         - match:
             path_prefix: "/v1/"

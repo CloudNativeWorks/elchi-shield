@@ -66,14 +66,15 @@ func validateFile(file string, f *File) []error {
 
 	for di, d := range f.Spec.Domains {
 		dp := fmt.Sprintf("spec.domains[%d]", di)
-		// A domain is selected by host and/or listener_id — at least one is required.
-		// host may be empty when listener_id pins the domain to a listener (then it
-		// matches any host on that listener).
-		switch {
-		case strings.TrimSpace(d.Host) == "" && strings.TrimSpace(d.ListenerID) == "":
-			add(dp, errors.New("host or listener_id is required (at least one)"))
-		case strings.TrimSpace(d.Host) != "" && !hostRe.MatchString(d.Host):
-			add(dp+".host", fmt.Errorf("invalid host %q", d.Host))
+		// A domain matches one or more hosts; at least one is required. Each entry
+		// is exact, a leading-wildcard ("*.example.com"), or "*" (catch-all).
+		if len(d.Hosts) == 0 {
+			add(dp+".hosts", errors.New("at least one host is required"))
+		}
+		for hi, h := range d.Hosts {
+			if h != "*" && !hostRe.MatchString(h) {
+				add(fmt.Sprintf("%s.hosts[%d]", dp, hi), fmt.Errorf("invalid host %q", h))
+			}
 		}
 		errs = append(errs, validateSpec(file, dp+".policy", d.Policy)...)
 
@@ -675,21 +676,22 @@ func validateMatch(file, prefix string, m Match) []error {
 	return errs
 }
 
-// validateMerged checks cross-file invariants on the merged config, chiefly
-// that no two domains collide on (host, listener_id).
+// validateMerged checks cross-file invariants on the merged config, chiefly that
+// no host is claimed by two domains (which would make resolution ambiguous).
 func validateMerged(m *MergedConfig) []error {
 	var errs []error
-	type key struct{ host, listener string }
-	seen := make(map[key]string, len(m.Domains))
+	seen := make(map[string]string, len(m.Domains)) // normalized host -> source
 	for i, d := range m.Domains {
-		k := key{host: d.Host, listener: d.ListenerID}
-		if prev, ok := seen[k]; ok {
-			errs = append(errs, newFileError(d.Source,
-				fmt.Sprintf("domains[%d]", i),
-				fmt.Errorf("duplicate domain host=%q listener_id=%q (already defined in %s)", d.Host, d.ListenerID, prev)))
-			continue
+		for _, h := range d.Hosts {
+			k := strings.ToLower(strings.TrimSpace(h)) // case-insensitive dedup key
+			if prev, ok := seen[k]; ok {
+				errs = append(errs, newFileError(d.Source,
+					fmt.Sprintf("domains[%d]", i),
+					fmt.Errorf("duplicate host %q (already defined in %s)", h, prev)))
+				continue
+			}
+			seen[k] = d.Source
 		}
-		seen[k] = d.Source
 	}
 	return errs
 }

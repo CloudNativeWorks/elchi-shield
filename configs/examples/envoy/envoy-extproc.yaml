@@ -33,7 +33,7 @@ static_resources:
               #       socket_address: { address: 127.0.0.1, port_value: 9000 }
 
   listeners:
-    - name: lst-public-443           # use this as listener_id in your policy
+    - name: lst-public-443           # --extproc-listener id for isolation/metrics (not a policy selector)
       address:
         socket_address: { address: 0.0.0.0, port_value: 8443 }
       filter_chains:

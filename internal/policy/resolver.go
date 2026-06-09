@@ -12,7 +12,6 @@ import (
 // per request from the pipeline Transaction; Headers is satisfied by the
 // Transaction directly so no copy is needed.
 type Input struct {
-	ListenerID  string
 	Host        string
 	Path        string
 	Method      string
@@ -37,16 +36,27 @@ func (r *compiledRoute) matches(in *Input) bool {
 		matcher.MatchAll(r.headers, in.Headers)
 }
 
-// compiledDomain is a precompiled domain: a host matcher, optional listener
-// scope, its routes (ordered most-specific first), and a domain default policy
-// used when no route matches.
+// compiledDomain is a precompiled domain: its host matchers (the domain matches
+// if any matches), its routes (ordered most-specific first), and a domain default
+// policy used when no route matches.
 type compiledDomain struct {
-	host          matcher.Host
-	hostExact     bool
-	listenerID    string // "" = applies to any listener
-	hostAny       bool   // true for a listener-only domain (no host → match any host)
+	hosts         []matcher.Host
 	routes        []*compiledRoute
 	defaultPolicy *CompiledPolicy
+}
+
+// hostSpecificity returns the specificity of the most-specific host matcher that
+// matches host, or -1 when none match. Allocation-free.
+func (cd *compiledDomain) hostSpecificity(host string) int {
+	best := -1
+	for i := range cd.hosts {
+		if cd.hosts[i].Match(host) {
+			if s := cd.hosts[i].Specificity(); s > best {
+				best = s
+			}
+		}
+	}
+	return best
 }
 
 // passThroughPolicy is the shared mode-off policy assigned to an excluded path so
@@ -57,20 +67,17 @@ var passThroughPolicy = &CompiledPolicy{ID: "exclude", Mode: config.ModeOff}
 // Resolver maps a request to its most-specific CompiledPolicy. It is immutable
 // after Compile and safe for concurrent, lock-free use on the hot path.
 //
-// Precedence (most → least specific), matching docs/ARCHITECTURE §8:
-//  1. Host: exact host beats wildcard.
-//  2. Listener scope: a domain bound to the request listener beats an unscoped
-//     domain for the same host (tiebreaker after host).
-//  3. Path within the winning domain: exact > regex > longest prefix.
+// Precedence (most → least specific):
+//  1. Host: exact host beats a leading-wildcard ("*.example.com"), which beats a
+//     bare "*" catch-all. A domain matching via its most-specific host wins.
+//  2. Path within the winning domain: exact > regex > longest prefix.
 //
-// A domain scoped to a different listener is never a candidate. If the winning
-// domain has no matching route, its domain-level default policy applies (the
-// resolver does not fall back to a less-specific domain).
+// If the winning domain has no matching route, its domain-level default policy
+// applies (the resolver does not fall back to a less-specific domain).
 type Resolver struct {
-	exact        map[string][]*compiledDomain // normalized exact host -> domains
-	wildcard     []*compiledDomain            // wildcard-host domains
-	listenerOnly []*compiledDomain            // no host: match any host on their listener
-	excludes     map[string]struct{}          // normalized paths that bypass all inspection
+	exact    map[string][]*compiledDomain // normalized exact host -> domains (exact-only domains)
+	wildcard []*compiledDomain            // domains with a wildcard/catch-all host
+	excludes map[string]struct{}          // normalized paths that bypass all inspection
 }
 
 // Excluded reports whether the (already normalized) request path is on the
@@ -97,23 +104,17 @@ func (r *Resolver) Resolve(in *Input) *CompiledPolicy {
 	var best *compiledDomain
 	bestScore := -1
 
+	// Exact-only domains via the O(1) map; wildcard/catch-all domains scanned. A
+	// domain is in exactly one bucket, so it's scored at most once. The winning
+	// domain is the one whose most-specific matching host beats all others
+	// (exact > "*.x" > "*").
 	for _, cd := range r.exact[matcher.NormalizeHost(in.Host)] {
-		if s, ok := domainScore(cd, in); ok && s > bestScore {
+		if s := cd.hostSpecificity(in.Host); s > bestScore {
 			best, bestScore = cd, s
 		}
 	}
 	for _, cd := range r.wildcard {
-		if !cd.host.Match(in.Host) {
-			continue
-		}
-		if s, ok := domainScore(cd, in); ok && s > bestScore {
-			best, bestScore = cd, s
-		}
-	}
-	// Listener-only domains (no host) match any host on their listener. They score
-	// below any host-matching domain, so they only win when no host domain matched.
-	for _, cd := range r.listenerOnly {
-		if s, ok := domainScore(cd, in); ok && s > bestScore {
+		if s := cd.hostSpecificity(in.Host); s > bestScore {
 			best, bestScore = cd, s
 		}
 	}
@@ -165,31 +166,5 @@ func (r *Resolver) Close() error {
 	for _, cd := range r.wildcard {
 		closeDomain(cd)
 	}
-	for _, cd := range r.listenerOnly {
-		closeDomain(cd)
-	}
 	return errors.Join(errs...)
-}
-
-// domainScore ranks a candidate domain for a request. It returns (score, true)
-// when the domain is a candidate, or (_, false) when scoped to a different
-// listener. Host specificity dominates (exact > longer wildcard suffix > shorter
-// wildcard); a listener-scoped match breaks ties between equally specific hosts.
-//
-// Host specificity is doubled so its smallest meaningful difference (1) outweighs
-// the at-most-1 listener bonus, keeping host the primary key and listener a pure
-// tiebreaker.
-func domainScore(cd *compiledDomain, in *Input) (int, bool) {
-	if cd.listenerID != "" && cd.listenerID != in.ListenerID {
-		return 0, false
-	}
-	hostSpec := 0
-	if !cd.hostAny { // listener-only domains contribute 0 host specificity
-		hostSpec = cd.host.Specificity()
-	}
-	score := hostSpec * 2
-	if cd.listenerID != "" && cd.listenerID == in.ListenerID {
-		score++
-	}
-	return score, true
 }

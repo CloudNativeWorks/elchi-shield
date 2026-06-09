@@ -14,8 +14,7 @@ spec:
     fail_mode: fail_open
 
   domains:
-    - host: "scored.example.com"
-      listener_id: "lst-scored-443"
+    - hosts: ["scored.example.com"]
       routes:
         - match:
             path_prefix: "/"

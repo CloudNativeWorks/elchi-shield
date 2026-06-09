@@ -17,7 +17,7 @@ func (emptyHeaders) RangeHeaders(func(string, string) bool) {}
 
 func TestCompileBuildsJWTEngine(t *testing.T) {
 	cfg := merged(config.Domain{
-		Host: "a.com",
+		Hosts: []string{"a.com"},
 		Policy: config.PolicySpec{
 			Engines: &config.EnginesSpec{JWT: &config.JWTSpec{
 				Algorithms: []string{"HS256"},
@@ -27,7 +27,7 @@ func TestCompileBuildsJWTEngine(t *testing.T) {
 		},
 	})
 	r := mustCompile(t, cfg)
-	p := r.Resolve(in("a.com", "/", "GET", ""))
+	p := r.Resolve(in("a.com", "/", "GET"))
 	if p == nil || p.Engines == nil || p.Engines.Len() != 1 {
 		t.Fatalf("jwt engine should be compiled into the policy: %+v", p)
 	}
@@ -48,7 +48,7 @@ func TestCompileSharesEnginesAcrossInheritingPolicies(t *testing.T) {
 	// A domain-level engine spec inherited by a route must compile to ONE shared
 	// engine.Set (deduplicated by spec pointer), not two identical sets.
 	cfg := merged(config.Domain{
-		Host: "a.com",
+		Hosts: []string{"a.com"},
 		Policy: config.PolicySpec{
 			Engines: &config.EnginesSpec{JWT: &config.JWTSpec{
 				Algorithms: []string{"HS256"}, HMACSecret: "secret", Audience: "api",
@@ -59,8 +59,8 @@ func TestCompileSharesEnginesAcrossInheritingPolicies(t *testing.T) {
 		},
 	})
 	r := mustCompile(t, cfg)
-	domainPol := r.Resolve(in("a.com", "/", "GET", ""))    // domain default
-	routePol := r.Resolve(in("a.com", "/v1/x", "GET", "")) // route
+	domainPol := r.Resolve(in("a.com", "/", "GET"))    // domain default
+	routePol := r.Resolve(in("a.com", "/v1/x", "GET")) // route
 	if domainPol == nil || routePol == nil {
 		t.Fatal("both policies should resolve")
 	}
@@ -72,7 +72,7 @@ func TestCompileSharesEnginesAcrossInheritingPolicies(t *testing.T) {
 	}
 	// A route that OVERRIDES engines must get its own set.
 	cfg2 := merged(config.Domain{
-		Host: "b.com",
+		Hosts: []string{"b.com"},
 		Policy: config.PolicySpec{
 			Engines: &config.EnginesSpec{JWT: &config.JWTSpec{Algorithms: []string{"HS256"}, HMACSecret: "s1"}},
 		},
@@ -83,8 +83,8 @@ func TestCompileSharesEnginesAcrossInheritingPolicies(t *testing.T) {
 		},
 	})
 	r2 := mustCompile(t, cfg2)
-	dp := r2.Resolve(in("b.com", "/", "GET", ""))
-	rp := r2.Resolve(in("b.com", "/v1/x", "GET", ""))
+	dp := r2.Resolve(in("b.com", "/", "GET"))
+	rp := r2.Resolve(in("b.com", "/v1/x", "GET"))
 	if dp.Engines == rp.Engines {
 		t.Fatal("overriding route must not share the domain engine set")
 	}
@@ -94,7 +94,7 @@ func TestResolverCloseClosesSharedSetOnce(t *testing.T) {
 	// Build a resolver whose policies share one engine set, then Close it. Close
 	// must succeed (no double-close error) and dedup by pointer.
 	cfg := merged(config.Domain{
-		Host: "a.com",
+		Hosts: []string{"a.com"},
 		Policy: config.PolicySpec{
 			Engines: &config.EnginesSpec{JWT: &config.JWTSpec{Algorithms: []string{"HS256"}, HMACSecret: "secret"}},
 		},
@@ -111,7 +111,7 @@ func TestCompileCorazaNotBuiltErrors(t *testing.T) {
 		t.Skip("coraza adapter is built in")
 	}
 	cfg := merged(config.Domain{
-		Host: "a.com",
+		Hosts: []string{"a.com"},
 		Policy: config.PolicySpec{
 			Engines: &config.EnginesSpec{Coraza: &config.CorazaSpec{IncludeOWASP: true}},
 		},
@@ -133,7 +133,7 @@ func corazaBuilt() bool {
 func TestRateLimitSharingFollowsInheritance(t *testing.T) {
 	burst := 2
 	cfg := merged(config.Domain{
-		Host: "a.com",
+		Hosts: []string{"a.com"},
 		// Domain-level rate_limit: inherited by routes that don't override engines.
 		Policy: config.PolicySpec{
 			Engines: &config.EnginesSpec{RateLimit: &config.RateLimitSpec{
@@ -157,9 +157,9 @@ func TestRateLimitSharingFollowsInheritance(t *testing.T) {
 		return v.Action
 	}
 
-	v1 := r.Resolve(in("a.com", "/v1/x", "GET", ""))
-	v2 := r.Resolve(in("a.com", "/v2/x", "GET", ""))
-	own := r.Resolve(in("a.com", "/own/x", "GET", ""))
+	v1 := r.Resolve(in("a.com", "/v1/x", "GET"))
+	v2 := r.Resolve(in("a.com", "/v2/x", "GET"))
+	own := r.Resolve(in("a.com", "/own/x", "GET"))
 
 	// Inherited routes share ONE limiter: 2 requests across v1+v2 exhaust the
 	// combined burst, so the 3rd (on either) is blocked.

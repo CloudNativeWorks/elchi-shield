@@ -11,8 +11,7 @@ spec:
     fail_mode: fail_close   # auth failures should fail closed
 
   domains:
-    - host: "secure.example.com"
-      listener_id: "lst-public-443"
+    - hosts: ["secure.example.com"]
       routes:
         # Protected API: every request must carry a valid JWT.
         - match:

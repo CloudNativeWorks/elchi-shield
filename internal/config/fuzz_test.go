@@ -12,7 +12,7 @@ kind: SecurityPolicy
 metadata: {name: t}
 spec:
   domains:
-    - host: a.com
+    - hosts: ["a.com"]
       routes:
         - match: {path_prefix: /}
           policy: {mode: block}

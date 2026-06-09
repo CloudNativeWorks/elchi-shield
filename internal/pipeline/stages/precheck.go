@@ -156,7 +156,6 @@ func (policyResolve) Process(_ context.Context, tx *pipeline.Transaction) pipeli
 		return pipeline.Continue()
 	}
 	tx.Policy = r.Resolve(&policy.Input{
-		ListenerID:  tx.ListenerID,
 		Host:        tx.Host,
 		Path:        mp,
 		Method:      tx.Method,

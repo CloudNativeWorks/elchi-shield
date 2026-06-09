@@ -13,8 +13,7 @@ spec:
     fail_mode: fail_close
 
   domains:
-    - host: "graph.example.com"
-      listener_id: "lst-graph-443"
+    - hosts: ["graph.example.com"]
       routes:
         - match:
             path_prefix: "/graphql"

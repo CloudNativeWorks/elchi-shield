@@ -122,7 +122,7 @@ func buildProcessor(t *testing.T) *Processor {
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Host: "api.example.com",
+			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{
 				{
 					Match: config.Match{PathPrefix: "/json"},
@@ -247,7 +247,7 @@ func procWithPolicy(t *testing.T, match config.Match, spec config.PolicySpec) *P
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Host:   "api.example.com",
+			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{{Match: match, Policy: spec}},
 		}}},
 	}
@@ -269,7 +269,7 @@ func procWithAuditor(t *testing.T, match config.Match, spec config.PolicySpec, a
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Host:   "api.example.com",
+			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{{Match: match, Policy: spec}},
 		}}},
 	}
@@ -448,7 +448,7 @@ func TestProcessorInFlightBudgetBlocksOversizedAggregate(t *testing.T) {
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Host: "api.example.com",
+			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{
 				Mode:                ptr(block),
 				InspectRequestBody:  &tru,
@@ -486,7 +486,7 @@ func TestProcessorHeaderOnlyPolicyTrailersNoDoubleFinish(t *testing.T) {
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Host:   "api.example.com",
+			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{Mode: ptr(block)}}},
 		}}},
 	}
@@ -576,7 +576,7 @@ func TestProcessorBudgetReleasedBetweenPhases(t *testing.T) {
 	cfg := &config.MergedConfig{
 		Sources: []string{"t"},
 		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
-			Host: "api.example.com",
+			Hosts: []string{"api.example.com"},
 			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{
 				Mode:                 ptr(block),
 				InspectRequestBody:   &tru,

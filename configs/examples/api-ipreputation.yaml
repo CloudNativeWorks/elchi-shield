@@ -20,8 +20,7 @@ spec:
     fail_mode: fail_open
 
   domains:
-    - host: "edge.example.com"
-      listener_id: "lst-edge-443"
+    - hosts: ["edge.example.com"]
       routes:
         # Block known-bad networks + a Spamhaus/FireHOL feed. A match is a 403.
         - match:

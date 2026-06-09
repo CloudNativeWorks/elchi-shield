@@ -23,7 +23,7 @@ func snapshotForStress(t *testing.T) *rt.Snapshot {
 	t.Helper()
 	mode := config.ModeBlock
 	cfg := &config.MergedConfig{Sources: []string{"s"}, Domains: []config.MergedDomain{{Source: "s", Domain: config.Domain{
-		Host: "api.example.com",
+		Hosts: []string{"api.example.com"},
 		Routes: []config.Route{{
 			Match:  config.Match{PathPrefix: "/"},
 			Policy: config.PolicySpec{Mode: &mode, Checks: config.Checks{Headers: &config.HeaderChecks{Required: []string{"X-Request-Id"}}}},
