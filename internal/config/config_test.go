@@ -483,3 +483,42 @@ spec:
 		t.Errorf("strong secret with sane window should be allowed, got %v", err)
 	}
 }
+
+func TestValidateHTTPSignatureFootguns(t *testing.T) {
+	base := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - host: a.com
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              http_signature:
+`
+	strong := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" // 64 bytes
+	cases := map[string]struct{ frag, want string }{
+		"weak secret (< 64 bytes)": {
+			"                secret: tooshort\n",
+			"at least 64 bytes",
+		},
+		"max_age too large": {
+			"                secret: " + strong + "\n                max_age: 24h\n",
+			"must be <= 1h0m0s",
+		},
+	}
+	for name, tc := range cases {
+		dir := writeFiles(t, map[string]string{"a.yaml": base + tc.frag})
+		_, err := Load(dir)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, tc.want, err)
+		}
+	}
+	ok := base + "                secret: " + strong + "\n                max_age: 60s\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": ok})); err != nil {
+		t.Errorf("strong 64-byte secret with sane max_age should be allowed, got %v", err)
+	}
+}

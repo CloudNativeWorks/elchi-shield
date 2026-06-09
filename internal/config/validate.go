@@ -267,12 +267,7 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 			validateHMACSign(h, add)
 		}
 		if hs := s.Engines.HTTPSignature; hs != nil {
-			if hs.Secret == "" {
-				add("engines.http_signature.secret", errors.New("required (hmac-sha256 shared secret)"))
-			}
-			if hs.MaxAge.AsDuration() < 0 {
-				add("engines.http_signature.max_age", errors.New("must be >= 0"))
-			}
+			validateHTTPSignature(hs, add)
 		}
 		if j := s.Engines.JWKS; j != nil {
 			validateJWKS(j, add)
@@ -437,6 +432,31 @@ func validateHMACSign(h *HMACSignSpec, add func(field string, err error)) {
 		add("engines.hmac_sign.nonce_ttl", errors.New("must be >= 0"))
 	} else if ttl > hmacMaxWindow {
 		add("engines.hmac_sign.nonce_ttl", fmt.Errorf("must be <= %s", hmacMaxWindow))
+	}
+}
+
+// httpsigMinSecretLen is the minimum shared-secret length (bytes) for the RFC
+// 9421 hmac-sha256 engine — the yaronf/httpsign library requires >= 64 bytes;
+// rejecting it here attributes the error to the config field instead of failing
+// opaquely at engine build.
+const httpsigMinSecretLen = 64
+
+// httpsigMaxAge caps the signature acceptance window. A large window widens the
+// replay window for any client that doesn't send a nonce, so bound it.
+const httpsigMaxAge = time.Hour
+
+// validateHTTPSignature checks the RFC 9421 HTTP Message Signatures engine config.
+func validateHTTPSignature(hs *HTTPSignatureSpec, add func(field string, err error)) {
+	switch {
+	case hs.Secret == "":
+		add("engines.http_signature.secret", errors.New("required (hmac-sha256 shared secret)"))
+	case len(hs.Secret) < httpsigMinSecretLen:
+		add("engines.http_signature.secret", fmt.Errorf("must be at least %d bytes (RFC 9421 hmac-sha256 requirement)", httpsigMinSecretLen))
+	}
+	if age := hs.MaxAge.AsDuration(); age < 0 {
+		add("engines.http_signature.max_age", errors.New("must be >= 0"))
+	} else if age > httpsigMaxAge {
+		add("engines.http_signature.max_age", fmt.Errorf("must be <= %s", httpsigMaxAge))
 	}
 }
 
