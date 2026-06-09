@@ -285,13 +285,16 @@ func TestIsJSONContentTypeRobust(t *testing.T) {
 	}
 }
 
-type fakeDetector struct{ found bool }
+type fakeDetector struct {
+	found bool
+	ms    []sensitive.Match
+}
 
 func (f fakeDetector) Scan(context.Context, string, []byte) (bool, string) {
 	return f.found, "credit_card"
 }
 
-func (f fakeDetector) Matches([]byte) []sensitive.Match { return nil }
+func (f fakeDetector) Matches([]byte) []sensitive.Match { return f.ms }
 
 func TestBodyChecksSensitiveData(t *testing.T) {
 	pol := compiled(config.ModeBlock, config.Checks{Body: &config.BodyChecks{DetectSensitiveData: true}})

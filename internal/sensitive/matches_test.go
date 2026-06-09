@@ -25,13 +25,13 @@ func TestMatchesOffsetsAndKinds(t *testing.T) {
 	}
 }
 
-func TestMatchesSortedNonOverlapping(t *testing.T) {
+func TestMatchesSortedByStart(t *testing.T) {
 	d := New()
 	body := []byte("a@b.com x@y.org 4111111111111111")
 	ms := d.Matches(body)
 	for i := 1; i < len(ms); i++ {
-		if ms[i].Start < ms[i-1].End {
-			t.Fatalf("matches overlap or unsorted: %+v", ms)
+		if ms[i].Start < ms[i-1].Start {
+			t.Fatalf("matches not sorted by start: %+v", ms)
 		}
 	}
 }

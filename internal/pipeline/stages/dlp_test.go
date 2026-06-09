@@ -89,6 +89,25 @@ func TestDLPNoMatchNoMutation(t *testing.T) {
 	}
 }
 
+func TestDLPBlockNotHiddenByOverlappingRedact(t *testing.T) {
+	// A redact-kind match overlaps a block-kind match (built-in patterns won't
+	// produce this, so use a fake detector). Block must still win — the hard
+	// secret must NOT be redacted-and-forwarded.
+	tx := dlpPolicy(t, []string{"private_key"}, []string{"email"})
+	tx.AppendBody([]byte("0123456789012345"), 1<<20)
+	det := fakeDetector{ms: []sensitive.Match{
+		{Start: 0, End: 12, Kind: "email"},       // redact, longer, sorts first
+		{Start: 4, End: 16, Kind: "private_key"}, // block, overlaps
+	}}
+	res := BodyChecks(det).Process(bg(), tx)
+	if res.Action != pipeline.ActionDeny {
+		t.Fatalf("an overlapping block-kind match must still block, got %+v", res)
+	}
+	if tx.BodyMutated() {
+		t.Fatal("a blocked body must not be mutated/forwarded")
+	}
+}
+
 func TestRedactBodySinglePass(t *testing.T) {
 	body := []byte("a@b.com mid c@d.com end")
 	ms := sensitive.New().Matches(body)

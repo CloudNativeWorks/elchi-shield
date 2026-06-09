@@ -13,6 +13,7 @@ func TestDetectorFindsSecrets(t *testing.T) {
 		"private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIE...",
 		"google":      "key=AIza01234567890123456789012345678901234",
 		"github":      "ghp_0123456789abcdefghijklmnopqrstuvwxyzABCD",
+		"stripe":      `{"key":"sk_live_0123456789abcdefABCDEFGH"}`,
 		"credit_card": "card 4111 1111 1111 1111 here", // valid Luhn Visa test number
 	}
 	for name, body := range cases {

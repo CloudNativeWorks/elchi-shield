@@ -35,6 +35,7 @@ func New() *Detector {
 			{"google_api_key", regexp.MustCompile(`\bAIza[0-9A-Za-z\-_]{35}\b`)},
 			{"slack_token", regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,}\b`)},
 			{"github_token", regexp.MustCompile(`\bgh[pousr]_[0-9A-Za-z]{36,}\b`)},
+			{"stripe_key", regexp.MustCompile(`\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}\b`)},
 			{"jwt", regexp.MustCompile(`\beyJ[0-9A-Za-z_-]{8,}\.[0-9A-Za-z_-]{8,}\.[0-9A-Za-z_-]{8,}\b`)},
 			{"ssn", regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)},
 			{"email", regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)},
@@ -52,9 +53,11 @@ type Match struct {
 	Kind  string
 }
 
-// Matches returns all sensitive-data findings with their byte offsets, sorted by
-// start and de-overlapped (the first match of any overlapping pair wins), so a
-// caller can rewrite the body in a single left-to-right pass.
+// Matches returns ALL sensitive-data findings with their byte offsets, sorted by
+// start (and longer-first at the same start). Overlapping matches are NOT dropped
+// here: a caller deciding whether to BLOCK must see every finding (otherwise an
+// overlapping redact-kind match could hide a block-kind one and a hard secret
+// would be forwarded). Single-pass redaction de-overlaps as it rewrites.
 func (d *Detector) Matches(body []byte) []Match {
 	if d == nil || len(body) == 0 {
 		return nil
@@ -79,13 +82,7 @@ func (d *Detector) Matches(body []byte) []Match {
 		}
 		return ms[i].End > ms[j].End // prefer the longer match at the same start
 	})
-	out := ms[:1]
-	for _, m := range ms[1:] {
-		if m.Start >= out[len(out)-1].End { // non-overlapping
-			out = append(out, m)
-		}
-	}
-	return out
+	return ms
 }
 
 // Scan implements the body stage's SensitiveDataDetector. It returns whether a
