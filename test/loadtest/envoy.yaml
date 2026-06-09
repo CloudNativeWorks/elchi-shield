@@ -1,0 +1,73 @@
+# Envoy config for the load test: a REAL Envoy proxying HTTP through the ext_proc
+# filter to elchi-shield, then to a local echo upstream. Dedicated ports so it
+# can run alongside the e2e harness. Mirrors production: static body mode NONE +
+# allow_mode_override (shield buffers a body only when a policy needs it).
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9911 }
+
+static_resources:
+  clusters:
+    - name: elchi_shield
+      type: STATIC
+      connect_timeout: 0.5s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: elchi_shield
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 127.0.0.1, port_value: 9989 }
+
+    - name: backend
+      type: STATIC
+      connect_timeout: 0.5s
+      load_assignment:
+        cluster_name: backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 127.0.0.1, port_value: 18090 }
+
+  listeners:
+    - name: lst-load
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 10010 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                use_remote_address: true
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: api
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: backend }
+                http_filters:
+                  - name: envoy.filters.http.ext_proc
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                      failure_mode_allow: false
+                      allow_mode_override: true
+                      grpc_service:
+                        envoy_grpc: { cluster_name: elchi_shield }
+                        timeout: 1s
+                      processing_mode:
+                        request_header_mode: SEND
+                        response_header_mode: SEND
+                        request_body_mode: NONE
+                        response_body_mode: NONE
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

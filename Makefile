@@ -10,7 +10,7 @@ DOCKER_IMAGE ?= elchi-shield
 TAGS      ?=
 LDFLAGS   := -s -w -X main.version=v$(VERSION) -X main.commit=$(COMMIT)
 
-.PHONY: all build run test race bench loadtest profile cover vet lint tidy clean fmt fuzz vuln docker e2e
+.PHONY: all build run test race bench loadtest loadtest-real profile cover vet lint tidy clean fmt fuzz vuln docker e2e
 
 all: vet test build
 
@@ -41,9 +41,16 @@ race:
 bench:
 	$(GO) test -run=^$$ -bench=. -benchmem $(PKG)
 
-# End-to-end gRPC throughput over an in-memory transport.
+# End-to-end gRPC throughput over an in-memory transport (header + body paths).
 loadtest:
 	$(GO) test -run=^$$ -bench=BenchmarkProcess -benchmem ./internal/server/extproc/
+
+# Real-traffic load test: a REAL Envoy proxies sustained HTTP through elchi-shield
+# to an echo upstream; a closed-loop driver reports req/s + p50/p99 latency for
+# passthrough / header-only / body-inspecting paths. Needs a real Envoy (func-e or
+# ENVOY=...). Tunables: DURATION, CONNS, WARMUP.
+loadtest-real:
+	bash test/loadtest/run.sh
 
 # Full end-to-end smoke: a REAL Envoy proxies HTTP through elchi-shield to an echo
 # upstream and asserts allow(200)/block(403)/rate-limit(429). Needs a real Envoy

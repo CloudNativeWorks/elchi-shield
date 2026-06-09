@@ -1,0 +1,41 @@
+# Load-test policy: representative routes for throughput measurement against a
+# real Envoy. Uses only lean-binary (no build tag) features so the load test
+# reflects the production default binary.
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: loadtest
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open
+    timeout: 500ms
+    max_request_body_bytes: 1048576
+
+  domains:
+    - host: "api.example.com"
+      policy: { mode: off }          # unmatched paths pass straight through
+      routes:
+        # Pure passthrough (mode off): the floor — gRPC + prelude only, no checks.
+        - match: { path_prefix: "/passthru" }
+          policy: { mode: off }
+
+        # The common enforced hot path: header-only checks (no body buffering).
+        - match: { path_prefix: "/bench" }
+          policy:
+            mode: block
+            checks:
+              headers:
+                forbidden: ["X-Debug"]
+                required: ["X-Bench-Token"]   # custom: Envoy won't auto-add it (unlike x-request-id)
+                enforce_valid_host: true
+
+        # Body-inspecting path: forces the BUFFERED mode_override + body buffering
+        # and runs the built-in sensitive-data detector over the request body.
+        - match: { path_prefix: "/body" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            checks:
+              body:
+                detect_sensitive_data: true

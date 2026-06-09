@@ -100,6 +100,57 @@ func BenchmarkProcessBaseline(b *testing.B) {
 	reportThroughput(b, start)
 }
 
+// oneRequestWithBody runs a full body-buffering transaction: headers (no EOS) →
+// recv the BUFFERED mode-override → body (EOS) → recv the body decision → close.
+func oneRequestWithBody(b testing.TB, client extprocv3.ExternalProcessorClient, hdrs, body *extprocv3.ProcessingRequest) {
+	stream, err := client.Process(context.Background())
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := stream.Send(hdrs); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := stream.Recv(); err != nil { // mode override
+		b.Fatal(err)
+	}
+	if err := stream.Send(body); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := stream.Recv(); err != nil { // body decision
+		b.Fatal(err)
+	}
+	_ = stream.CloseSend()
+}
+
+// BenchmarkProcessRequestBody: a body-inspecting policy (the built-in
+// sensitive-data detector over a buffered request body). Measures the extra cost
+// of the BUFFERED mode-override + body round-trip + body scan vs the header path.
+func BenchmarkProcessRequestBody(b *testing.B) {
+	mode := config.ModeBlock
+	yes := true
+	pr := benchProcessor(b, config.Domain{Host: "api.example.com", Routes: []config.Route{{
+		Match: config.Match{PathPrefix: "/"},
+		Policy: config.PolicySpec{
+			Mode:               &mode,
+			InspectRequestBody: &yes,
+			Checks:             config.Checks{Body: &config.BodyChecks{DetectSensitiveData: true}},
+		},
+	}}})
+	client, cleanup := newBufServer(b, pr)
+	defer cleanup()
+	hdrs := reqHeaders(":authority", "api.example.com", ":path", "/v1/x", ":method", "POST", "content-type", "text/plain")
+	body := reqBody("a clean request body with no secrets in it whatsoever", true)
+
+	b.ResetTimer()
+	start := time.Now()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			oneRequestWithBody(b, client, hdrs, body)
+		}
+	})
+	reportThroughput(b, start)
+}
+
 // BenchmarkProcessHeaderChecks: a block-mode policy running header checks on a
 // clean request (allowed) — the common enforced path.
 func BenchmarkProcessHeaderChecks(b *testing.B) {
