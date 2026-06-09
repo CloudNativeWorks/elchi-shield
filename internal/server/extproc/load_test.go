@@ -23,7 +23,7 @@ import (
 func newBufServer(b testing.TB, pr *Processor) (extprocv3.ExternalProcessorClient, func()) {
 	b.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(serverOptions(0)...) // exercise the production tuning
 	extprocv3.RegisterExternalProcessorServer(srv, pr)
 	go func() { _ = srv.Serve(lis) }()
 

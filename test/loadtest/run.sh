@@ -30,11 +30,13 @@ go build -o "$DIR/driver.bin" "$DIR/driver" || { echo "driver build failed"; exi
 CFG="$(mktemp -d)"
 cp "$DIR/policy.yaml" "$CFG/policy.yaml"
 PIDS=()
-cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/echo.bin" "$DIR/driver.bin"; }
+cleanup(){ for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -rf "$CFG" "$DIR/elchi-shield.bin" "$DIR/echo.bin" "$DIR/driver.bin" "$SOCK"; }
 trap cleanup EXIT
 
+SOCK="/tmp/elchi-shield-loadtest.sock"   # UDS, matching the production default (lower overhead than loopback TCP)
+rm -f "$SOCK"
 ECHO_ADDR=127.0.0.1:18090 "$DIR/echo.bin" & PIDS+=($!)
-"$DIR/elchi-shield.bin" --config-dir "$CFG" --extproc-network tcp --extproc-addr 127.0.0.1:9989 \
+"$DIR/elchi-shield.bin" --config-dir "$CFG" --extproc-network unix --extproc-addr "$SOCK" \
   --http-addr "$HTTP" --log-level error & PIDS+=($!)
 for _ in $(seq 1 40); do curl -sf "http://${HTTP}/readyz" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -sf "http://${HTTP}/readyz" >/dev/null 2>&1 || { echo "shield not ready"; exit 1; }

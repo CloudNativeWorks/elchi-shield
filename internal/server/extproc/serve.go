@@ -37,6 +37,13 @@ func serverOptions(maxStreams uint32) []grpc.ServerOption {
 		// instead of spawning one goroutine per stream, cutting per-request churn.
 		grpc.NumStreamWorkers(uint32(runtime.GOMAXPROCS(0))),
 		grpc.SharedWriteBuffer(true), // reuse write buffers, fewer allocations
+		// Larger HTTP/2 windows: ext_proc exchanges several small messages per
+		// stream; bigger windows avoid mid-request WINDOW_UPDATE round-trips, and a
+		// larger socket read buffer cuts read(2) syscalls. Memory cost is small (one
+		// Envoy connection; streams are mostly blocked on Recv).
+		grpc.InitialWindowSize(512 * 1024),  // 512 KiB per stream
+		grpc.InitialConnWindowSize(2 << 20), // 2 MiB per connection
+		grpc.ReadBufferSize(128 * 1024),     // 128 KiB socket read buffer
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second,
 			PermitWithoutStream: true, // Envoy may ping on idle connections

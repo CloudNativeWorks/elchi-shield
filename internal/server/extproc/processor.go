@@ -127,7 +127,9 @@ func (pr *Processor) Process(stream extprocv3.ExternalProcessor_ProcessServer) (
 	defer func() { pr.budget.Release(tx.BodyReserved()) }()
 	tx.SetBudget(pr.budget)       // lets the decode stage charge decoded bytes
 	tx.Snapshot = pr.store.Load() // pin for the whole stream
-	tx.RequestID = newRequestID()
+	// RequestID is minted lazily: Envoy almost always supplies x-request-id (adopted
+	// in onRequestHeaders), so the random fallback — a crypto/rand read + hex alloc —
+	// is only paid when that header is absent.
 	tx.ListenerID = pr.listenerID
 
 	for {
@@ -176,10 +178,11 @@ func (pr *Processor) onRequestHeaders(ctx context.Context, tx *pipeline.Transact
 	loadHeaders(tx, h.GetHeaders())
 
 	// Adopt Envoy's x-request-id so a block in our logs/audit can be pivoted to
-	// Envoy's access log and the upstream trace; fall back to the random id minted
-	// at stream start when absent.
+	// Envoy's access log and the upstream trace; mint a random id only when absent.
 	if rid, ok := tx.Header("x-request-id"); ok && rid != "" {
 		tx.RequestID = rid
+	} else if tx.RequestID == "" {
+		tx.RequestID = newRequestID()
 	}
 
 	// Fixed prelude: context init → policy resolve → early decision.
@@ -220,26 +223,42 @@ func (pr *Processor) onRequestHeaders(ctx context.Context, tx *pipeline.Transact
 	return requestHeadersContinue(requestMode(tx.Policy, false))
 }
 
-// requestMode builds the ModeOverride for the request-headers response: request a
-// BUFFERED request body when a body-phase check needs it, and SKIP the response
-// phase when the policy inspects only the request — eliminating a wasted ext_proc
-// round-trip per request. Unset header modes default to DEFAULT (use the static
-// Envoy config), so we set ResponseHeaderMode only when we actually want to skip
-// it; a response-inspecting policy leaves it at the static SEND.
+// The four request-headers ModeOverrides are immutable and shared (gRPC only
+// reads them), so they're built once rather than per request. Unset header modes
+// default to DEFAULT (use the static Envoy config); SKIP is explicit, so a
+// response-inspecting policy never receives a SKIP.
+var (
+	modeSkipResponse = &procmodev3.ProcessingMode{
+		ResponseHeaderMode: procmodev3.ProcessingMode_SKIP,
+		ResponseBodyMode:   procmodev3.ProcessingMode_NONE,
+	}
+	modeBufferBody = &procmodev3.ProcessingMode{
+		RequestBodyMode: procmodev3.ProcessingMode_BUFFERED,
+	}
+	modeBufferBodySkipResponse = &procmodev3.ProcessingMode{
+		RequestBodyMode:    procmodev3.ProcessingMode_BUFFERED,
+		ResponseHeaderMode: procmodev3.ProcessingMode_SKIP,
+		ResponseBodyMode:   procmodev3.ProcessingMode_NONE,
+	}
+)
+
+// requestMode returns the request-headers ModeOverride: request a BUFFERED body
+// when a body-phase check needs it, and SKIP the response phase when the policy
+// inspects only the request — eliminating a wasted ext_proc round-trip per
+// request. Returns nil (keep the static mode) for a response-inspecting policy
+// that needs no request body.
 func requestMode(p *policy.CompiledPolicy, needBody bool) *procmodev3.ProcessingMode {
 	skipResp := !p.NeedsResponseInspection()
-	if !needBody && !skipResp {
-		return nil // nothing to override → keep the static processing mode
+	switch {
+	case needBody && skipResp:
+		return modeBufferBodySkipResponse
+	case needBody:
+		return modeBufferBody
+	case skipResp:
+		return modeSkipResponse
+	default:
+		return nil
 	}
-	m := &procmodev3.ProcessingMode{}
-	if needBody {
-		m.RequestBodyMode = procmodev3.ProcessingMode_BUFFERED
-	}
-	if skipResp {
-		m.ResponseHeaderMode = procmodev3.ProcessingMode_SKIP
-		m.ResponseBodyMode = procmodev3.ProcessingMode_NONE
-	}
-	return m
 }
 
 // appendBody buffers chunk for inspection, charging the shared in-flight body
@@ -674,21 +693,31 @@ func responseHeadersContinue(mode *procmodev3.ProcessingMode) *extprocv3.Process
 	}
 }
 
-func requestBodyContinue() *extprocv3.ProcessingResponse {
-	return &extprocv3.ProcessingResponse{
+// The no-mutation CONTINUE responses (body/trailers) are immutable and identical
+// every call; gRPC only reads them, so they're built once and shared rather than
+// re-allocated per request.
+var (
+	respRequestBodyContinue = &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_RequestBody{
 			RequestBody: &extprocv3.BodyResponse{Response: &extprocv3.CommonResponse{Status: extprocv3.CommonResponse_CONTINUE}},
 		},
 	}
-}
-
-func responseBodyContinue() *extprocv3.ProcessingResponse {
-	return &extprocv3.ProcessingResponse{
+	respResponseBodyContinue = &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_ResponseBody{
 			ResponseBody: &extprocv3.BodyResponse{Response: &extprocv3.CommonResponse{Status: extprocv3.CommonResponse_CONTINUE}},
 		},
 	}
-}
+	respRequestTrailersContinue = &extprocv3.ProcessingResponse{
+		Response: &extprocv3.ProcessingResponse_RequestTrailers{RequestTrailers: &extprocv3.TrailersResponse{}},
+	}
+	respResponseTrailersContinue = &extprocv3.ProcessingResponse{
+		Response: &extprocv3.ProcessingResponse_ResponseTrailers{ResponseTrailers: &extprocv3.TrailersResponse{}},
+	}
+)
+
+func requestBodyContinue() *extprocv3.ProcessingResponse { return respRequestBodyContinue }
+
+func responseBodyContinue() *extprocv3.ProcessingResponse { return respResponseBodyContinue }
 
 // bodyMutationCommon builds the CommonResponse that replaces the data-plane body
 // with the (redacted) bytes. Because the buffered body the inspectors saw is the
@@ -720,14 +749,6 @@ func requestBodyMutation(body []byte) *extprocv3.ProcessingResponse {
 	}
 }
 
-func requestTrailersContinue() *extprocv3.ProcessingResponse {
-	return &extprocv3.ProcessingResponse{
-		Response: &extprocv3.ProcessingResponse_RequestTrailers{RequestTrailers: &extprocv3.TrailersResponse{}},
-	}
-}
+func requestTrailersContinue() *extprocv3.ProcessingResponse { return respRequestTrailersContinue }
 
-func responseTrailersContinue() *extprocv3.ProcessingResponse {
-	return &extprocv3.ProcessingResponse{
-		Response: &extprocv3.ProcessingResponse_ResponseTrailers{ResponseTrailers: &extprocv3.TrailersResponse{}},
-	}
-}
+func responseTrailersContinue() *extprocv3.ProcessingResponse { return respResponseTrailersContinue }
