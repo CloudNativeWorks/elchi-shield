@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
@@ -113,6 +114,40 @@ func TestRequestBodyValidation(t *testing.T) {
 	}
 	if v := inspect(t, e, req("POST", "/create", "application/json", `{}`)); v.Action != decision.Block {
 		t.Fatal("body missing required field should block")
+	}
+}
+
+func TestBodyValidationOffSkipsBody(t *testing.T) {
+	// Body validation OFF → the body isn't buffered (empty). A required-body
+	// operation must NOT be rejected for the unbuffered body...
+	e := mkEngine(t, false, false)
+	if v := inspect(t, e, req("POST", "/create", "application/json", "")); v.Action == decision.Block {
+		t.Fatalf("body-off must not reject a required-body op on an empty body, got %+v", v)
+	}
+	// ...but parameters are still validated.
+	if v := inspect(t, e, req("GET", "/users/abc?q=hi", "", "")); v.Action != decision.Block {
+		t.Fatal("parameters must still be validated when body validation is off")
+	}
+}
+
+func TestBodyValidationOnStillChecksBody(t *testing.T) {
+	e := mkEngine(t, true, false)
+	if v := inspect(t, e, req("POST", "/create", "application/json", `{}`)); v.Action != decision.Block {
+		t.Fatal("body-on must still reject a body missing a required field")
+	}
+}
+
+func TestReasonDoesNotLeakSubmittedValue(t *testing.T) {
+	// The block reason is auditable; it must not embed the request's submitted
+	// value (potential PII/secret).
+	e := mkEngine(t, false, false)
+	const secret = "SUPERSECRET123"
+	v := inspect(t, e, req("GET", "/users/"+secret+"?q=hi", "", ""))
+	if v.Action != decision.Block {
+		t.Fatal("a non-integer id should block")
+	}
+	if strings.Contains(v.Reason, secret) {
+		t.Fatalf("audit reason leaked the submitted value: %q", v.Reason)
 	}
 }
 

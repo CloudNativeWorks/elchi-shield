@@ -15,6 +15,8 @@ import (
 
 	"github.com/pb33f/libopenapi"
 	validator "github.com/pb33f/libopenapi-validator"
+	verrors "github.com/pb33f/libopenapi-validator/errors"
+	"github.com/pb33f/libopenapi-validator/parameters"
 	"github.com/pb33f/libopenapi-validator/paths"
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 
@@ -74,26 +76,74 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	}
 	hr := toHTTPRequest(req)
 
-	// Undeclared-path detection (shadow-endpoint): FindPath resolves the matching
-	// PathItem; a nil item means the path isn't in the contract.
-	if e.rejectPath {
-		item, _, _ := paths.FindPath(hr, e.model, nil)
+	// Resolve the operation once. A nil PathItem means the path isn't in the
+	// contract — a positive-security engine blocks it either way; rejectPath only
+	// selects the clearer rule id.
+	item, ferrs, pathValue := paths.FindPath(hr, e.model, nil)
+	if item == nil || len(ferrs) > 0 {
 		if item == nil {
 			return block("openapi.undeclared_path", "request path is not declared in the OpenAPI spec"), nil
 		}
+		return block("openapi.invalid", genericReason(ferrs)), nil
 	}
 
-	// ValidateHttpRequestSync validates path/query/header params and the request
-	// body WITHOUT spawning goroutines (hot-path safe).
-	ok, verrs := e.validator.ValidateHttpRequestSync(hr)
+	// With body validation on, validate everything (params + body); the body was
+	// buffered because RequiresBody() reported true. With it off the body is NOT
+	// buffered, so validating it would falsely reject a required-body operation on
+	// an empty body — validate parameters only (path/query/header/cookie/security)
+	// using the same set the full validator runs, minus the body.
+	var ok bool
+	var verrs []*verrors.ValidationError
+	if e.requiresBody {
+		ok, verrs = e.validator.ValidateHttpRequestSyncWithPathItem(hr, item, pathValue)
+	} else {
+		ok, verrs = validateParamsOnly(e.validator.GetParameterValidator(), hr, item, pathValue)
+	}
 	if !ok {
-		reason := "request does not conform to the OpenAPI spec"
-		if len(verrs) > 0 && verrs[0] != nil {
-			reason = verrs[0].Message
-		}
-		return block("openapi.invalid", reason), nil
+		return block("openapi.invalid", genericReason(verrs)), nil
 	}
 	return decision.Verdict{}, nil
+}
+
+// validateParamsOnly runs the parameter/security validators (everything the full
+// sync validator runs except the request body), so disabling body validation
+// doesn't reject requests for an unbuffered body.
+func validateParamsOnly(pv parameters.ParameterValidator, hr *http.Request, item *v3.PathItem, pathValue string) (bool, []*verrors.ValidationError) {
+	var all []*verrors.ValidationError
+	for _, fn := range []func(*http.Request, *v3.PathItem, string) (bool, []*verrors.ValidationError){
+		pv.ValidatePathParamsWithPathItem,
+		pv.ValidateCookieParamsWithPathItem,
+		pv.ValidateHeaderParamsWithPathItem,
+		pv.ValidateQueryParamsWithPathItem,
+		pv.ValidateSecurityWithPathItem,
+	} {
+		if okp, errs := fn(hr, item, pathValue); !okp {
+			all = append(all, errs...)
+		}
+	}
+	return len(all) == 0, all
+}
+
+// genericReason builds an audit-safe block reason from a validation error using
+// ONLY structural, spec-derived fields (type/subtype/parameter name). It never
+// surfaces Message/Reason/SchemaValidationErrors, which embed the submitted value
+// and would leak request data (PII/secrets) into the audit log.
+func genericReason(verrs []*verrors.ValidationError) string {
+	const generic = "request does not conform to the OpenAPI spec"
+	if len(verrs) == 0 || verrs[0] == nil {
+		return generic
+	}
+	e0 := verrs[0]
+	switch {
+	case e0.ParameterName != "" && e0.ValidationSubType != "":
+		return fmt.Sprintf("%s parameter %q does not conform to the OpenAPI spec", e0.ValidationSubType, e0.ParameterName)
+	case e0.ParameterName != "":
+		return fmt.Sprintf("parameter %q does not conform to the OpenAPI spec", e0.ParameterName)
+	case e0.ValidationType != "":
+		return e0.ValidationType + " does not conform to the OpenAPI spec"
+	default:
+		return generic
+	}
 }
 
 // toHTTPRequest reconstructs a net/http.Request from the engine view for the
