@@ -36,8 +36,10 @@ trap cleanup EXIT
 SOCK="/tmp/elchi-shield-loadtest.sock"   # UDS, matching the production default (lower overhead than loopback TCP)
 rm -f "$SOCK"
 ECHO_ADDR=127.0.0.1:18090 "$DIR/echo.bin" & PIDS+=($!)
+# Tuned runtime: a higher GOGC (less frequent GC on the alloc-heavy decode path)
+# with a memory ceiling as the safety net — the recommended production combo.
 "$DIR/elchi-shield.bin" --config-dir "$CFG" --extproc-network unix --extproc-addr "$SOCK" \
-  --http-addr "$HTTP" --log-level error & PIDS+=($!)
+  --http-addr "$HTTP" --log-level error --gogc "${GOGC:-300}" --mem-limit-bytes "${MEMLIMIT:-1073741824}" & PIDS+=($!)
 for _ in $(seq 1 40); do curl -sf "http://${HTTP}/readyz" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -sf "http://${HTTP}/readyz" >/dev/null 2>&1 || { echo "shield not ready"; exit 1; }
 

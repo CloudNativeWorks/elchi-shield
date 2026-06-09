@@ -110,6 +110,7 @@ type appConfig struct {
 	blockProfileRate int
 	mutexProfileFrac int
 	memLimitBytes    int64
+	gogc             int
 	shutdownTimeout  time.Duration
 }
 
@@ -211,6 +212,14 @@ func run(cfg appConfig, logger *slog.Logger) error {
 			logger.Warn("mem-limit-bytes is close to the in-flight body budget; GC may thrash — set it well above max-inflight-body-bytes",
 				"mem_limit_bytes", cfg.memLimitBytes, "inflight_body_budget", cfg.maxInFlightBody)
 		}
+	}
+	// GOGC: the ext_proc decode path is allocation-heavy, so the GC can take a
+	// meaningful slice of CPU at the default GOGC=100 (collect when the heap
+	// doubles). Raising it runs the GC less often — more CPU for actual work, more
+	// throughput — at the cost of a higher heap; pair it with --mem-limit-bytes as
+	// the safety ceiling. 0 leaves the runtime/GOGC-env default untouched.
+	if cfg.gogc > 0 {
+		debug.SetGCPercent(cfg.gogc)
 	}
 	if cfg.blockProfileRate > 0 {
 		goruntime.SetBlockProfileRate(cfg.blockProfileRate)
@@ -327,7 +336,11 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	// leaves the sidecar enforcing a stale policy (reloads keep the last-good one).
 	m.RegisterGaugeFunc("config_age_seconds", "Seconds since the active config was built.",
 		func() float64 { return time.Since(store.Load().BuiltAt()).Seconds() })
-	logger.Info("scheduler", "GOMAXPROCS", goruntime.GOMAXPROCS(0), "listeners", len(specs))
+	gogcLabel := "default"
+	if cfg.gogc > 0 {
+		gogcLabel = strconv.Itoa(cfg.gogc)
+	}
+	logger.Info("scheduler", "GOMAXPROCS", goruntime.GOMAXPROCS(0), "GOGC", gogcLabel, "listeners", len(specs))
 	if err := mgr.Start(); err != nil {
 		return fmt.Errorf("start ext_proc: %w", err)
 	}
@@ -490,6 +503,7 @@ func parseFlags(args []string) appConfig {
 	fs.IntVar(&cfg.blockProfileRate, "block-profile-rate", envInt("ELCHI_SHIELD_BLOCK_PROFILE_RATE", 0), "runtime.SetBlockProfileRate (0=off; e.g. 10000 = ~1 sample/10µs blocked)")
 	fs.IntVar(&cfg.mutexProfileFrac, "mutex-profile-fraction", envInt("ELCHI_SHIELD_MUTEX_PROFILE_FRACTION", 0), "runtime.SetMutexProfileFraction (0=off; 1=every event)")
 	fs.Int64Var(&cfg.memLimitBytes, "mem-limit-bytes", envInt64("ELCHI_SHIELD_MEM_LIMIT", 0), "soft memory limit (GOMEMLIMIT) in bytes; GC reins in before OOM (0=unset; honors GOMEMLIMIT env too)")
+	fs.IntVar(&cfg.gogc, "gogc", int(envInt64("ELCHI_SHIELD_GOGC", 0)), "GC target percent (debug.SetGCPercent); higher = less frequent GC, more throughput, more heap. Pair with --mem-limit-bytes. 0=leave the runtime/GOGC default")
 	fs.DurationVar(&cfg.shutdownTimeout, "shutdown-timeout", envDuration("ELCHI_SHIELD_SHUTDOWN_TIMEOUT", 15*time.Second), "graceful shutdown timeout")
 
 	showVersion := fs.Bool("version", false, "print version and exit")
