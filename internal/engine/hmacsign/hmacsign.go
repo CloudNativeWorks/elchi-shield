@@ -8,12 +8,19 @@
 //
 //	method '\n' path '\n' timestamp '\n' nonce '\n' body-sha256
 //
-// where path is the request path with any query stripped, nonce is empty when
-// not sent, and body-sha256 is the lowercase hex SHA-256 of the body when
+// where path is the FULL request path including any query string (so a tampered
+// query can't be replayed under a captured signature), nonce is empty when not
+// sent, and body-sha256 is the lowercase hex SHA-256 of the body when
 // require_body_digest is set (empty otherwise). Because the body digest is part
 // of the signature only when require_body_digest is on, the engine declares
 // RequiresBody()==true exactly then — otherwise a swapped body would bypass the
 // signature.
+//
+// Replay is rejected after the signature verifies: with an explicit nonce the
+// nonce is the replay key; without one the verified MAC itself is the key, so a
+// captured request can't be replayed within its timestamp window even when no
+// nonce is sent. Recording only verified requests keeps an attacker from
+// poisoning the replay cache with bogus signatures.
 package hmacsign
 
 import (
@@ -143,9 +150,6 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	if e.requireN && nonce == "" {
 		return block("sig.nonce_missing", "missing nonce"), nil
 	}
-	if nonce != "" && e.replay.SeenBefore(nonce) {
-		return block("sig.replayed", "nonce already used (replay)"), nil
-	}
 
 	secret, ok := e.secretFor(req)
 	if !ok {
@@ -157,13 +161,28 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 		sum := sha256.Sum256(req.Body)
 		digest = hex.EncodeToString(sum[:])
 	}
-	canonical := req.Method + "\n" + pathOnly(req.Path) + "\n" + tsStr + "\n" + nonce + "\n" + digest
+	// The full path (query included) is signed so a captured signature can't be
+	// replayed against a tampered query string.
+	canonical := req.Method + "\n" + req.Path + "\n" + tsStr + "\n" + nonce + "\n" + digest
 
 	mac := hmac.New(e.newHash, []byte(secret))
 	mac.Write([]byte(canonical))
 	expected := mac.Sum(nil)
 	if !hmac.Equal(expected, provided) {
 		return block("sig.invalid", "signature verification failed"), nil
+	}
+
+	// Replay protection runs only after the signature verifies, so a bogus
+	// signature can't poison the cache (and can't pre-burn a victim's nonce).
+	// With an explicit nonce, the nonce is the replay key; otherwise the verified
+	// MAC is — identical signed requests within the timestamp window collide on
+	// the same MAC and the replay is caught even with no nonce sent.
+	replayKey := nonce
+	if replayKey == "" {
+		replayKey = hex.EncodeToString(expected)
+	}
+	if e.replay.SeenBefore(replayKey) {
+		return block("sig.replayed", "request signature already used (replay)"), nil
 	}
 	return decision.Verdict{}, nil
 }
@@ -177,11 +196,6 @@ func (e *Engine) secretFor(req *engine.Request) (string, bool) {
 	keyID, _ := req.Headers.Header(e.keyIDHdr)
 	s, ok := e.secrets[keyID]
 	return s, ok
-}
-
-func pathOnly(p string) string {
-	before, _, _ := strings.Cut(p, "?")
-	return before
 }
 
 func orDefault(v, def string) string {

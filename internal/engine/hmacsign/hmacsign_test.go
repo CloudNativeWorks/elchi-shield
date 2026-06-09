@@ -172,6 +172,54 @@ func TestKeyRotation(t *testing.T) {
 	}
 }
 
+func TestQueryIsSigned(t *testing.T) {
+	e := newEngine(t, Config{Secret: "shared-secret-1234"})
+	ts := strconv.Itoa(fixedNow)
+	// Signature is computed over the full path including the query.
+	sig := sign("shared-secret-1234", "GET", "/x?a=1", ts, "", "")
+	if v := inspect(t, e, &engine.Request{Method: "GET", Path: "/x?a=1", Headers: hdrs{"X-Signature": sig, "X-Timestamp": ts}}); v.Action == decision.Block {
+		t.Fatalf("matching query signature should pass, got %+v", v)
+	}
+	// Replaying the same signature against a tampered query must fail: the query
+	// is part of the canonical string.
+	if v := inspect(t, e, &engine.Request{Method: "GET", Path: "/x?a=2", Headers: hdrs{"X-Signature": sig, "X-Timestamp": ts}}); v.RuleID != "sig.invalid" {
+		t.Fatalf("tampered query should fail verification, got %+v", v)
+	}
+}
+
+func TestNoNonceReplayBlocked(t *testing.T) {
+	// With no nonce sent (and not required), an identical signed request replayed
+	// within the window is still caught — the verified MAC is the replay key.
+	e := newEngine(t, Config{Secret: "shared-secret-1234"})
+	ts := strconv.Itoa(fixedNow)
+	sig := sign("shared-secret-1234", "POST", "/pay", ts, "", "")
+	mk := func() *engine.Request {
+		return &engine.Request{Method: "POST", Path: "/pay", Headers: hdrs{"X-Signature": sig, "X-Timestamp": ts}}
+	}
+	if v := inspect(t, e, mk()); v.Action == decision.Block {
+		t.Fatalf("first no-nonce request should pass, got %+v", v)
+	}
+	if v := inspect(t, e, mk()); v.RuleID != "sig.replayed" {
+		t.Fatalf("replayed no-nonce request should block, got %+v", v)
+	}
+}
+
+func TestInvalidSigDoesNotBurnNonce(t *testing.T) {
+	// An attacker presenting a bogus signature with a victim's nonce must not
+	// poison the replay cache: the legitimate request with that nonce still works.
+	e := newEngine(t, Config{Secret: "shared-secret-1234", RequireNonce: true})
+	ts := strconv.Itoa(fixedNow)
+	nonce := "n-1"
+	bad := &engine.Request{Method: "GET", Path: "/x", Headers: hdrs{"X-Signature": "deadbeef", "X-Timestamp": ts, "X-Nonce": nonce}}
+	if v := inspect(t, e, bad); v.RuleID != "sig.invalid" {
+		t.Fatalf("bogus signature should block, got %+v", v)
+	}
+	good := sign("shared-secret-1234", "GET", "/x", ts, nonce, "")
+	if v := inspect(t, e, &engine.Request{Method: "GET", Path: "/x", Headers: hdrs{"X-Signature": good, "X-Timestamp": ts, "X-Nonce": nonce}}); v.Action == decision.Block {
+		t.Fatalf("legit request must not be blocked by a pre-burned nonce, got %+v", v)
+	}
+}
+
 func TestResponseDirectionPasses(t *testing.T) {
 	e := newEngine(t, Config{Secret: "s"})
 	v, err := e.Inspect(context.Background(), &engine.Request{Direction: engine.DirectionResponse, Headers: hdrs{}})

@@ -397,6 +397,16 @@ func validateAPIKey(ak *APIKeySpec, add func(field string, err error)) {
 	}
 }
 
+// hmacMinSecretLen is the minimum shared-secret length (bytes). HMAC security
+// rests on secret entropy; a short/guessable secret lets an attacker forge
+// signatures, so a too-short secret is rejected at config load.
+const hmacMinSecretLen = 16
+
+// hmacMaxWindow caps the timestamp-acceptance window. The window also defaults
+// the nonce-replay TTL, so an unbounded window would retain nonces indefinitely
+// (unbounded memory) and widen the replay window; cap it at a sane maximum.
+const hmacMaxWindow = time.Hour
+
 // validateHMACSign checks the HMAC-signing engine config.
 func validateHMACSign(h *HMACSignSpec, add func(field string, err error)) {
 	if h.Secret == "" && len(h.Secrets) == 0 {
@@ -405,13 +415,28 @@ func validateHMACSign(h *HMACSignSpec, add func(field string, err error)) {
 	if h.Secret != "" && len(h.Secrets) > 0 {
 		add("engines.hmac_sign", errors.New("set either secret or secrets, not both"))
 	}
+	if h.Secret != "" && len(h.Secret) < hmacMinSecretLen {
+		add("engines.hmac_sign.secret", fmt.Errorf("must be at least %d bytes (weak secret)", hmacMinSecretLen))
+	}
+	for id, s := range h.Secrets {
+		if len(s) < hmacMinSecretLen {
+			add("engines.hmac_sign.secrets", fmt.Errorf("secret for key id %q must be at least %d bytes (weak secret)", id, hmacMinSecretLen))
+		}
+	}
 	switch h.Algorithm {
 	case "", "sha256", "sha512":
 	default:
 		add("engines.hmac_sign.algorithm", fmt.Errorf("invalid algorithm %q (want sha256|sha512)", h.Algorithm))
 	}
-	if h.Window.AsDuration() < 0 {
+	if w := h.Window.AsDuration(); w < 0 {
 		add("engines.hmac_sign.window", errors.New("must be >= 0"))
+	} else if w > hmacMaxWindow {
+		add("engines.hmac_sign.window", fmt.Errorf("must be <= %s", hmacMaxWindow))
+	}
+	if ttl := h.NonceTTL.AsDuration(); ttl < 0 {
+		add("engines.hmac_sign.nonce_ttl", errors.New("must be >= 0"))
+	} else if ttl > hmacMaxWindow {
+		add("engines.hmac_sign.nonce_ttl", fmt.Errorf("must be <= %s", hmacMaxWindow))
 	}
 }
 

@@ -155,7 +155,7 @@ spec:
             mode: block
             engines:
               hmac_sign:
-                secret: "e2e-hmac-secret"
+                secret: "e2e-hmac-secret-0123456789abcdef"
                 window: 300s
         # RFC 9421 HTTP Message Signatures (requires the `httpsig` build tag).
         - match: { path_prefix: "/sig" }

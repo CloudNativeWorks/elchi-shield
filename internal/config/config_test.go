@@ -436,3 +436,50 @@ spec:
 		t.Errorf("loopback http JWKS URL should be allowed, got %v", err)
 	}
 }
+
+func TestValidateHMACSignFootguns(t *testing.T) {
+	base := `
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: {name: t}
+spec:
+  domains:
+    - host: a.com
+      routes:
+        - match: {path_prefix: /v1/}
+          policy:
+            mode: block
+            engines:
+              hmac_sign:
+`
+	cases := map[string]struct{ frag, want string }{
+		"weak shared secret": {
+			"                secret: short\n",
+			"at least 16 bytes",
+		},
+		"weak rotated secret": {
+			"                secrets: {k1: short}\n",
+			"at least 16 bytes",
+		},
+		"window too large": {
+			"                secret: a-long-enough-shared-secret\n                window: 24h\n",
+			"must be <= 1h0m0s",
+		},
+		"nonce_ttl too large": {
+			"                secret: a-long-enough-shared-secret\n                nonce_ttl: 24h\n",
+			"must be <= 1h0m0s",
+		},
+	}
+	for name, tc := range cases {
+		dir := writeFiles(t, map[string]string{"a.yaml": base + tc.frag})
+		_, err := Load(dir)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, tc.want, err)
+		}
+	}
+	// A strong secret with a sane window is accepted.
+	ok := base + "                secret: a-long-enough-shared-secret\n                window: 300s\n"
+	if _, err := Load(writeFiles(t, map[string]string{"a.yaml": ok})); err != nil {
+		t.Errorf("strong secret with sane window should be allowed, got %v", err)
+	}
+}

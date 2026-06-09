@@ -233,7 +233,7 @@ req GET /apikey "$AH";                                  expect "missing API key 
 req GET /apikey/admin "$AH" -H 'X-Api-Key: e2e-api-key-1'; expect "key lacks admin scope → 403" "$CODE" 403
 req GET /apikey/admin "$AH" -H 'X-Api-Key: e2e-admin-key'; expect "key with admin scope → 200" "$CODE" 200
 # HMAC: sign the canonical "METHOD\npath\nts\nnonce\ndigest" with openssl.
-HS=e2e-hmac-secret; TS=$(date +%s)
+HS=e2e-hmac-secret-0123456789abcdef; TS=$(date +%s)
 sig(){ printf 'GET\n/hmac\n%s\n%s\n%s' "$1" "$2" "$3" | openssl dgst -sha256 -hmac "$HS" | awk '{print $NF}'; }
 SIG=$(sig "$TS" '' '')
 req GET /hmac "$AH" -H "X-Signature: $SIG" -H "X-Timestamp: $TS";  expect "valid HMAC signature → 200" "$CODE" 200
