@@ -115,6 +115,13 @@ type appConfig struct {
 }
 
 func main() {
+	// `elchi-shield validate <dir>` is a one-shot config check used by elchi-client
+	// as a pre-commit gate; it never starts the server. Intercept before flag
+	// parsing (which is server-oriented).
+	if len(os.Args) > 1 && os.Args[1] == "validate" {
+		os.Exit(runValidate(os.Args[2:]))
+	}
+
 	cfg := parseFlags(os.Args[1:])
 
 	// Stamp the instance identity on every log record so logs from many machines
