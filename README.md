@@ -107,6 +107,30 @@ Key flags (all also settable via `ELCHI_SHIELD_*` env vars):
 The service starts safely with **no config** (empty snapshot, default posture)
 and restores the last config from disk on restart.
 
+### Install as a systemd service (edge host)
+
+On an edge host (next to Envoy + elchi-client), the bundled scripts set up the
+user, directory tree, and a hardened `elchi-shield.service`:
+
+```sh
+# Download the latest release, verify its sha256, install + start the service:
+sudo deploy/elchi-shield-install.sh
+sudo deploy/elchi-shield-install.sh --version=v0.2.0   # pin a release
+sudo deploy/elchi-shield-install.sh --build            # compile this checkout (Go 1.26+)
+
+# Fast dev inner-loop (build → validate → restart → tail journal):
+sudo ./go.sh
+
+# Remove just elchi-shield (leaves the shared elchi user / /etc/elchi intact):
+sudo deploy/elchi-shield-uninstall.sh
+```
+
+The unit runs as the shared `elchi` user, serves Envoy over a systemd-managed
+UDS at `unix:/run/elchi-shield/extproc.sock` (group-owned so Envoy can connect —
+its user must be in the `elchi` group), and binds health/metrics on loopback
+only. Policy files are watched in `/etc/elchi/elchi-shield/conf.d` (populated by
+elchi-client). `make install` / `make uninstall` wrap the same scripts.
+
 ## Endpoints
 
 All on the loopback HTTP server (`--http-addr`):

@@ -9,7 +9,7 @@ COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DOCKER_IMAGE ?= elchi-shield
 LDFLAGS   := -s -w -X main.version=v$(VERSION) -X main.commit=$(COMMIT)
 
-.PHONY: all build run test race bench loadtest loadtest-real profile cover vet lint tidy clean fmt fuzz vuln docker e2e
+.PHONY: all build run test race bench loadtest loadtest-real profile cover vet lint tidy clean fmt fuzz vuln docker e2e install uninstall
 
 all: vet test build
 
@@ -93,3 +93,12 @@ vuln:
 
 clean:
 	rm -rf $(BIN_DIR) coverage.out
+
+# Install/remove the hardened systemd service on an edge host (needs root).
+# install compiles this checkout from source; pass ARGS=... for other modes
+# (e.g. make install ARGS="--version=v$(VERSION)").
+install:
+	sudo deploy/elchi-shield-install.sh --build $(ARGS)
+
+uninstall:
+	sudo deploy/elchi-shield-uninstall.sh $(ARGS)
