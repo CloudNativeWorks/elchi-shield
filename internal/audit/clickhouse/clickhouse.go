@@ -107,7 +107,7 @@ func ensureDatabase(o *ch.Options, db string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return c.Exec(ctx, "CREATE DATABASE IF NOT EXISTS `"+db+"`")

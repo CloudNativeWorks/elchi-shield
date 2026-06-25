@@ -5,12 +5,9 @@ import (
 	"time"
 )
 
-//go:fix inline
-func ptr[T any](v T) *T { return new(v) }
-
 func TestResolveInheritanceOrder(t *testing.T) {
 	base := DefaultPolicy()
-	fileDefaults := PolicySpec{Mode: new(ModeDetect), Timeout: ptr(Duration(100 * time.Millisecond))}
+	fileDefaults := PolicySpec{Mode: new(ModeDetect), Timeout: new(Duration(100 * time.Millisecond))}
 	domain := PolicySpec{FailMode: new(FailClose)}
 	route := PolicySpec{Mode: new(ModeShadow), SamplingRate: new(0.5)}
 

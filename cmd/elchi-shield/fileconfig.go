@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,13 +22,13 @@ import (
 // only (their defaults are non-zero, so "unset" can't be told from the default).
 type fileConfig struct {
 	Audit struct {
-		Exporter            string  `yaml:"exporter"`              // none|clickhouse|otel
-		ClickHouseDSN       string  `yaml:"clickhouse_dsn"`        // the default audit sink when set
-		ClickHouseTable     string  `yaml:"clickhouse_table"`      // default elchi_shield_audit
-		ClickHouseBatchSize int     `yaml:"clickhouse_batch_size"` // default 500
-		ClickHouseTTLDays   int     `yaml:"clickhouse_ttl_days"`   // default 7
-		OTELEndpoint        string  `yaml:"otel_endpoint"`         // OTLP audit endpoint
-		OTELInsecure        bool    `yaml:"otel_insecure"`
+		Exporter            string `yaml:"exporter"`              // none|clickhouse|otel
+		ClickHouseDSN       string `yaml:"clickhouse_dsn"`        // the default audit sink when set
+		ClickHouseTable     string `yaml:"clickhouse_table"`      // default elchi_shield_audit
+		ClickHouseBatchSize int    `yaml:"clickhouse_batch_size"` // default 500
+		ClickHouseTTLDays   int    `yaml:"clickhouse_ttl_days"`   // default 7
+		OTELEndpoint        string `yaml:"otel_endpoint"`         // OTLP audit endpoint
+		OTELInsecure        bool   `yaml:"otel_insecure"`
 		// MaxPerSec is the allow-stream rate cap. NOTE: under the merge rule a file
 		// value of 0 means "inherit" (not "force unlimited") — the default already
 		// is unlimited, so this only matters if you wanted the file to override a
@@ -54,7 +55,7 @@ func loadFileConfig(path string) (fileConfig, error) {
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true) // reject unknown keys so a typo'd setting is caught at boot
-	if err := dec.Decode(&fc); err != nil && err != io.EOF {
+	if err := dec.Decode(&fc); err != nil && !errors.Is(err, io.EOF) {
 		return fc, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 	return fc, nil

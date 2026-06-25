@@ -113,9 +113,6 @@ func reqTrailers() *extprocv3.ProcessingRequest {
 	}}
 }
 
-//go:fix inline
-func ptr[T any](v T) *T { return new(v) }
-
 func buildProcessor(t *testing.T) *Processor {
 	t.Helper()
 	block := config.ModeBlock
