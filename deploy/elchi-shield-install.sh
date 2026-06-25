@@ -30,6 +30,15 @@ PIN_VERSION=""          # --version=vX.Y.Z (default: latest release)
 BUILD_FROM_SOURCE=false # --build (compile this checkout instead of downloading)
 START_SERVICE=true      # --no-start to install without enabling/starting
 
+# Telemetry sinks (both optional; nothing is written to a local file either way).
+#   - Audit events → central ClickHouse when a DSN is given; else audit is OFF.
+#   - Metrics → pushed to an OTel Collector when an endpoint is given (it forwards
+#     to e.g. VictoriaMetrics); else only the loopback /metrics scrape exists.
+# The DSN may carry credentials, so it is stored in a restricted EnvironmentFile.
+AUDIT_CLICKHOUSE_DSN="${ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN:-}"
+METRICS_OTLP_ENDPOINT="${ELCHI_SHIELD_METRICS_OTLP_ENDPOINT:-}"   # OTel Collector host:port (OTLP/gRPC)
+METRICS_OTLP_INSECURE="${ELCHI_SHIELD_METRICS_OTLP_INSECURE:-}"   # set non-empty for plaintext gRPC
+
 # System users (shared stack identities; created idempotently)
 ELCHI_USER="elchi"
 ELCHI_GROUP="elchi"
@@ -43,7 +52,6 @@ SHIELD_DIR="$ELCHI_DIR/elchi-shield"
 CONF_DIR="$SHIELD_DIR/conf.d"          # watched config directory (files from elchi-client)
 FILES_DIR="$SHIELD_DIR/files"          # data files (feeds, JWKS, OpenAPI specs, …)
 LOG_DIR="/var/log/elchi"
-AUDIT_FILE="$LOG_DIR/elchi-shield.audit.ndjson"
 
 # Runtime socket lives on /run (tmpfs, systemd-managed) so Envoy can reach it.
 RUN_DIR_NAME="elchi-shield"            # → /run/elchi-shield (systemd RuntimeDirectory)
@@ -86,6 +94,9 @@ while [[ $# -gt 0 ]]; do
     --build)     BUILD_FROM_SOURCE=true; shift ;;
     --user=*)    ELCHI_USER="${1#*=}"; ELCHI_GROUP="$ELCHI_USER"; shift ;;
     --no-start)  START_SERVICE=false; shift ;;
+    --audit-clickhouse-dsn=*) AUDIT_CLICKHOUSE_DSN="${1#*=}"; shift ;;
+    --metrics-otlp-endpoint=*) METRICS_OTLP_ENDPOINT="${1#*=}"; shift ;;
+    --metrics-otlp-insecure)   METRICS_OTLP_INSECURE=1; shift ;;
     --help|-h)
       echo "Usage: sudo $0 [OPTIONS]"
       echo ""
@@ -94,12 +105,21 @@ while [[ $# -gt 0 ]]; do
       echo "  --build            Build from this checkout instead of downloading a release"
       echo "  --user=NAME        Service user/group (default: elchi)"
       echo "  --no-start         Install but do not enable/start the service"
+      echo "  --audit-clickhouse-dsn=DSN  Send audit events to central ClickHouse"
+      echo "                              (else audit is OFF — no local file; env:"
+      echo "                               ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN)"
+      echo "  --metrics-otlp-endpoint=H:P Push metrics to an OTel Collector (OTLP/gRPC)"
+      echo "                              (else only loopback /metrics scrape; env:"
+      echo "                               ELCHI_SHIELD_METRICS_OTLP_ENDPOINT)"
+      echo "  --metrics-otlp-insecure     Plaintext gRPC to the metrics collector"
       echo "  --help, -h         Show this help"
       echo ""
       echo "Examples:"
       echo "  sudo $0                       # download the latest release and start"
       echo "  sudo $0 --version=v0.2.0      # pin a release"
       echo "  sudo $0 --build               # compile this checkout (needs Go 1.26+)"
+      echo "  sudo $0 --audit-clickhouse-dsn=clickhouse://user:pass@ch.internal:9000/elchi \\"
+      echo "          --metrics-otlp-endpoint=otel-collector:4317 --metrics-otlp-insecure"
       exit 0
       ;;
     *) fail "Unknown argument: $1 (use --help)" ;;
@@ -231,6 +251,37 @@ run chmod 755 "$BINARY_PATH"
 # The socket lives under a systemd-managed RuntimeDirectory (/run/elchi-shield),
 # group-owned by elchi so Envoy (in that group) can connect. Health/metrics bind
 # loopback only. Hardening keeps the sidecar from being a foothold.
+# --- audit sink wiring -------------------------------------------------------
+# Audit goes to the central ClickHouse when a DSN is given; otherwise it is
+# DISABLED — there is NO local-file sink, events are simply skipped. The DSN may
+# carry credentials, so it goes into a restricted EnvironmentFile shield reads via
+# its env fallback, never the world-readable unit's ExecStart.
+AUDIT_ENV_FILE="$SHIELD_DIR/audit.env"
+ENV_FILE_LINE=""
+AUDIT_ARGS=""
+if [[ -n "$AUDIT_CLICKHOUSE_DSN" ]]; then
+  info "audit sink: ClickHouse (central)"   # DSN not logged (may carry credentials)
+  ( umask 037; printf 'ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN=%s\n' "$AUDIT_CLICKHOUSE_DSN" >"$AUDIT_ENV_FILE" )
+  chown "$ELCHI_USER:$ELCHI_GROUP" "$AUDIT_ENV_FILE"
+  chmod 0640 "$AUDIT_ENV_FILE"
+  ENV_FILE_LINE="EnvironmentFile=-$AUDIT_ENV_FILE"
+  AUDIT_ARGS="--audit-exporter clickhouse"
+else
+  info "audit sink: disabled (no --audit-clickhouse-dsn; events skipped, never written to a file)"
+  rm -f "$AUDIT_ENV_FILE"   # drop any stale DSN from a previous ClickHouse install
+fi
+
+# Metrics are PUSHED to an OTel Collector when an endpoint is given (it forwards
+# them on, e.g. to VictoriaMetrics). Otherwise only the loopback /metrics scrape
+# endpoint is available — no metric export.
+METRICS_ARGS=""
+if [[ -n "$METRICS_OTLP_ENDPOINT" ]]; then
+  info "metrics sink: OTLP push → $METRICS_OTLP_ENDPOINT"
+  METRICS_ARGS="--metrics-otlp-endpoint $METRICS_OTLP_ENDPOINT${METRICS_OTLP_INSECURE:+ --metrics-otlp-insecure}"
+else
+  info "metrics sink: scrape only (loopback /metrics; no --metrics-otlp-endpoint given)"
+fi
+
 info "writing systemd unit $SERVICE_FILE"
 cat >"$SERVICE_FILE" <<EOF
 [Unit]
@@ -243,6 +294,7 @@ Wants=network-online.target
 Type=simple
 User=$ELCHI_USER
 Group=$ELCHI_GROUP
+$ENV_FILE_LINE
 
 # systemd creates/cleans /run/elchi-shield, group-owned so Envoy can reach the UDS.
 RuntimeDirectory=$RUN_DIR_NAME
@@ -256,8 +308,7 @@ ExecStart=$BINARY_PATH \\
   --extproc-network unix \\
   --extproc-addr $SOCKET_PATH \\
   --http-addr $HTTP_ADDR \\
-  --audit-exporter file \\
-  --audit-file $AUDIT_FILE \\
+  $AUDIT_ARGS $METRICS_ARGS \\
   --log-format json \\
   --log-level info
 
@@ -302,13 +353,16 @@ printf "${C_OK}╔════════════════════�
 printf "${C_OK}║                  🛡️  ELCHI SHIELD INSTALLED!  🛡️                    ║${C_RST}\n"
 printf "${C_OK}╚════════════════════════════════════════════════════════════════════╝${C_RST}\n"
 echo ""
+AUDIT_DISPLAY="${AUDIT_CLICKHOUSE_DSN:+ClickHouse (central)}"; AUDIT_DISPLAY="${AUDIT_DISPLAY:-disabled (no DSN)}"
+METRICS_DISPLAY="${METRICS_OTLP_ENDPOINT:+OTLP → $METRICS_OTLP_ENDPOINT}"; METRICS_DISPLAY="${METRICS_DISPLAY:-scrape only (loopback /metrics)}"
 printf "${C_INF}┌─ 📄 LAYOUT ────────────────────────────────────────────────────────┐${C_RST}\n"
 printf "${C_INF}│${C_RST} Binary    : ${C_OK}%s${C_RST}\n" "$BINARY_PATH"
 printf "${C_INF}│${C_RST} Config dir: ${C_OK}%s${C_RST} (watched; managed by elchi-client)\n" "$CONF_DIR"
 printf "${C_INF}│${C_RST} Data files: ${C_OK}%s${C_RST}\n" "$FILES_DIR"
 printf "${C_INF}│${C_RST} ext_proc  : ${C_OK}unix:%s${C_RST}\n" "$SOCKET_PATH"
 printf "${C_INF}│${C_RST} Health    : ${C_OK}http://%s/healthz${C_RST} (loopback)\n" "$HTTP_ADDR"
-printf "${C_INF}│${C_RST} Audit log : ${C_OK}%s${C_RST}\n" "$AUDIT_FILE"
+printf "${C_INF}│${C_RST} Audit     : ${C_OK}%s${C_RST}\n" "$AUDIT_DISPLAY"
+printf "${C_INF}│${C_RST} Metrics   : ${C_OK}%s${C_RST}\n" "$METRICS_DISPLAY"
 printf "${C_INF}│${C_RST} Service   : ${C_OK}%s${C_RST}\n" "$SERVICE_FILE"
 printf "${C_INF}└────────────────────────────────────────────────────────────────────┘${C_RST}\n"
 echo ""

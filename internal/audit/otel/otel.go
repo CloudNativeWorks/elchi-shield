@@ -56,6 +56,9 @@ func (e *Exporter) Export(ctx context.Context, ev *audit.Event) error {
 	r.SetSeverityText(d.Severity.String())
 	r.AddAttributes(
 		otellog.String("instance", ev.Instance),
+		otellog.String("node_id", ev.NodeID),
+		otellog.String("project_id", ev.ProjectID),
+		otellog.String("listener", ev.Listener),
 		otellog.String("request_id", ev.RequestID),
 		otellog.String("phase", ev.Phase),
 		otellog.String("direction", ev.Direction),
@@ -67,6 +70,7 @@ func (e *Exporter) Export(ctx context.Context, ev *audit.Event) error {
 		otellog.String("host", ev.Host),
 		otellog.String("path", ev.Path),
 		otellog.String("method", ev.Method),
+		otellog.Int("status_code", d.StatusCode),
 		otellog.String("config_version", ev.ConfigVersion),
 	)
 	e.logger.Emit(ctx, r)

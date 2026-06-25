@@ -42,7 +42,11 @@ func DefaultPolicy() ResolvedPolicy {
 		MaxHeaderBytes:       8 << 10, // 8 KiB per header value
 		Timeout:              50 * time.Millisecond,
 		LogLevel:             "info",
-		SamplingRate:         1.0,
+		// Audit only 5% of the allow stream by default to keep the central store
+		// from ballooning under normal traffic; FINDINGS (block/detect/shadow) are
+		// always audited regardless of this rate. Override per policy (e.g. 1.0)
+		// when full allow-traffic capture is wanted.
+		SamplingRate: 0.05,
 	}
 }
 

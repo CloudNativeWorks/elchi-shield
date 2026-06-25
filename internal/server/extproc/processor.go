@@ -178,6 +178,41 @@ func listenerIDFromAttributes(req *extprocv3.ProcessingRequest) string {
 	return ""
 }
 
+// parseNodeID splits Envoy node ids of the form `listener::project_id::ip` into
+// their parts so audit events can be scoped per project/listener centrally. It
+// mirrors elchi-collector's node-id provenance model EXACTLY (the same
+// convention that stamps project_id onto api_events): a 2-part id is taken as
+// listener+project (no ip), the ip slot keeps any trailing "::" so an IPv6
+// address survives, and a single-segment/empty id yields all-empty. The parse
+// trusts position by platform convention; a node id that doesn't follow it
+// would scope wrongly here exactly as it would in the collector. Allocation-free:
+// it walks the string for the two "::" separators rather than allocating a slice.
+func parseNodeID(s string) (listener, projectID, ip string) {
+	if s == "" {
+		return "", "", ""
+	}
+	i := indexDoubleColon(s, 0)
+	if i < 0 {
+		return "", "", ""
+	}
+	j := indexDoubleColon(s, i+2)
+	if j < 0 {
+		return s[:i], s[i+2:], ""
+	}
+	return s[:i], s[i+2 : j], s[j+2:]
+}
+
+// indexDoubleColon returns the index of the first "::" in s at or after start,
+// or -1 if none.
+func indexDoubleColon(s string, start int) int {
+	for i := start; i+1 < len(s); i++ {
+		if s[i] == ':' && s[i+1] == ':' {
+			return i
+		}
+	}
+	return -1
+}
+
 // handle dispatches one ProcessingRequest to the right phase handler.
 func (pr *Processor) handle(ctx context.Context, tx *pipeline.Transaction, req *extprocv3.ProcessingRequest) *extprocv3.ProcessingResponse {
 	switch v := req.Request.(type) {
@@ -548,10 +583,24 @@ func (pr *Processor) emitAudit(ctx context.Context, tx *pipeline.Transaction, d 
 }
 
 // emitEvent builds and enqueues one audit event from a decision + tx context.
+// The Envoy node id (request_attribute) is parsed into listener/project so the
+// central sink can scope events per project; the raw node id is kept too. Falls
+// back to the processor's configured listener id when no attribute was sent.
 func (pr *Processor) emitEvent(ctx context.Context, tx *pipeline.Transaction, d *decision.Decision, phase string) {
+	nodeID := tx.NodeID
+	if nodeID == "" {
+		nodeID = tx.ListenerID
+	}
+	listener, projectID, _ := parseNodeID(tx.NodeID)
+	if listener == "" {
+		listener = tx.ListenerID
+	}
 	pr.auditor.Emit(ctx, &audit.Event{
 		Timestamp:     time.Now(),
 		Instance:      pr.instanceID,
+		NodeID:        nodeID,
+		ProjectID:     projectID,
+		Listener:      listener,
 		RequestID:     tx.RequestID,
 		Phase:         phase,
 		Direction:     tx.Direction.String(),

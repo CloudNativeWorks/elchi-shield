@@ -14,6 +14,9 @@ import (
 type Event struct {
 	Timestamp     time.Time         `json:"timestamp"`
 	Instance      string            `json:"instance,omitempty"`
+	NodeID        string            `json:"node_id,omitempty"`    // raw Envoy node id (ext_proc attribute)
+	ProjectID     string            `json:"project_id,omitempty"` // parsed from node id (listener::project::ip)
+	Listener      string            `json:"listener,omitempty"`   // parsed listener name from node id
 	RequestID     string            `json:"request_id,omitempty"`
 	Phase         string            `json:"phase,omitempty"`
 	Direction     string            `json:"direction,omitempty"`

@@ -12,15 +12,25 @@ import (
 // ExporterOptions configures a registered exporter. Fields are sink-specific;
 // each factory reads what it needs.
 type ExporterOptions struct {
-	DSN       string // ClickHouse DSN
-	Endpoint  string // OTEL collector endpoint
-	Table     string // ClickHouse table
-	BatchSize int
-	Insecure  bool
+	DSN           string // ClickHouse DSN
+	Endpoint      string // OTEL collector endpoint
+	Table         string // ClickHouse table
+	BatchSize     int
+	FlushInterval time.Duration // ClickHouse: time-based flush so low-traffic rows land promptly (0 = size-only)
+	TTLDays       int           // ClickHouse: row TTL in days (0 = no TTL)
+	Insecure      bool
 }
 
 // ExporterFactory constructs an exporter from options.
 type ExporterFactory func(ExporterOptions) (Exporter, error)
+
+// ExportFailCounter is implemented by sinks that batch/flush asynchronously and
+// can therefore drop events AFTER Export returns nil (e.g. the ClickHouse batch
+// exporter losing a batch when the server disk is full). The metric layer adds
+// this to the queue-level failure count so such losses stay observable.
+type ExportFailCounter interface {
+	FailedWrites() uint64
+}
 
 // exporterRegistry holds factories registered at init time by adapter
 // subpackages (clickhouse, otel). The "file" sink is built in directly. Mutation
@@ -104,6 +114,7 @@ type BufferedExporter struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 	dropped   atomic.Uint64
+	failed    atomic.Uint64
 }
 
 // NewBufferedExporter wraps inner with a queue of the given capacity drained by
@@ -151,12 +162,26 @@ func (b *BufferedExporter) run() {
 }
 
 // export applies the rate cap (findings bypass) and writes to the inner sink.
+// An inner-sink error (e.g. ClickHouse unreachable) is counted so a silently
+// failing/wedged remote sink is observable — the event is lost either way (the
+// request path is never blocked), but operators can see it via Failed().
+//
+// A recover() guards the worker: a panic from a third-party sink dependency must
+// not kill the drain goroutine (which would silently stop ALL audit), mirroring
+// the request-path panic recovery. The lost event is counted as failed.
 func (b *BufferedExporter) export(ev *Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			b.failed.Add(1)
+		}
+	}()
 	if !isFinding(ev) && !b.limiter.Allow() {
 		b.dropped.Add(1)
 		return
 	}
-	_ = b.inner.Export(context.Background(), ev)
+	if err := b.inner.Export(context.Background(), ev); err != nil {
+		b.failed.Add(1)
+	}
 }
 
 // Export enqueues ev without blocking. If the queue is full or the exporter is
@@ -181,6 +206,19 @@ func (b *BufferedExporter) Export(_ context.Context, ev *Event) error {
 
 // Dropped returns the number of events dropped due to a full queue or rate cap.
 func (b *BufferedExporter) Dropped() uint64 { return b.dropped.Load() }
+
+// Failed returns the number of events the inner sink failed to write — both the
+// errors Export returns synchronously AND the rows an async/batched sink drops
+// after the fact (via ExportFailCounter, e.g. ClickHouse rejecting inserts when
+// its disk is full). The request path is never affected; this surfaces a
+// degraded/wedged sink for monitoring.
+func (b *BufferedExporter) Failed() uint64 {
+	n := b.failed.Load()
+	if fc, ok := b.inner.(ExportFailCounter); ok {
+		n += fc.FailedWrites()
+	}
+	return n
+}
 
 // QueueLen returns the current depth of the async queue (for a live gauge).
 func (b *BufferedExporter) QueueLen() int { return len(b.queue) }

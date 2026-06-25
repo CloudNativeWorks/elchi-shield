@@ -29,6 +29,7 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/audit"
 	"github.com/cloudnativeworks/elchi-shield/internal/logging"
 	"github.com/cloudnativeworks/elchi-shield/internal/metrics"
+	"github.com/cloudnativeworks/elchi-shield/internal/metricsotlp"
 	"github.com/cloudnativeworks/elchi-shield/internal/pipeline"
 	"github.com/cloudnativeworks/elchi-shield/internal/pipeline/stages"
 	"github.com/cloudnativeworks/elchi-shield/internal/policy"
@@ -84,34 +85,41 @@ type retireItem struct {
 // intentionally flat and immutable after parsing; component-level config lives
 // in the relevant internal packages.
 type appConfig struct {
-	instanceID       string
-	configDir        string
-	extprocNetwork   string // "unix" or "tcp" (single-listener fallback)
-	extprocAddr      string
-	extprocListeners stringList // repeatable id=network:addr (multi-listener)
-	httpAddr         string
-	allowNonLoopback bool
-	listenerID       string
-	maxBodyBytes     int64
-	maxInFlightBody  int64
-	trustedHops      int
-	debounce         time.Duration
-	defaultAllow     bool
-	auditExporter    string
-	auditFile        string
-	auditDSN         string
-	auditEndpoint    string
-	auditInsecure    bool
-	auditMaxPerSec   float64
-	logLevel         string
-	logFormat        string
-	logSource        bool
-	pprof            bool
-	blockProfileRate int
-	mutexProfileFrac int
-	memLimitBytes    int64
-	gogc             int
-	shutdownTimeout  time.Duration
+	instanceID           string
+	configDir            string
+	extprocNetwork       string // "unix" or "tcp" (single-listener fallback)
+	extprocAddr          string
+	extprocListeners     stringList // repeatable id=network:addr (multi-listener)
+	httpAddr             string
+	allowNonLoopback     bool
+	listenerID           string
+	maxBodyBytes         int64
+	maxInFlightBody      int64
+	trustedHops          int
+	debounce             time.Duration
+	defaultAllow         bool
+	configFile           string
+	auditExporter        string
+	auditDSN             string
+	auditEndpoint        string
+	auditInsecure        bool
+	auditMaxPerSec       float64
+	auditCHTable         string
+	auditCHBatchSize     int
+	auditCHFlushInterval time.Duration
+	auditCHTTLDays       int
+	metricsOTLPEndpoint  string
+	metricsOTLPInsecure  bool
+	metricsOTLPInterval  time.Duration
+	logLevel             string
+	logFormat            string
+	logSource            bool
+	pprof                bool
+	blockProfileRate     int
+	mutexProfileFrac     int
+	memLimitBytes        int64
+	gogc                 int
+	shutdownTimeout      time.Duration
 }
 
 func main() {
@@ -123,6 +131,17 @@ func main() {
 	}
 
 	cfg := parseFlags(os.Args[1:])
+
+	// Merge the optional process-config file for the sink settings (flags/env
+	// already won where set). A bad file is a clear startup error (no traffic yet).
+	if cfg.configFile != "" {
+		fc, err := loadFileConfig(cfg.configFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fatal: "+err.Error())
+			os.Exit(1)
+		}
+		mergeFileConfig(&cfg, fc)
+	}
 
 	// Stamp the instance identity on every log record so logs from many machines
 	// never get confused. Source location (file:line) is enabled explicitly or
@@ -252,14 +271,50 @@ func run(cfg appConfig, logger *slog.Logger) error {
 		return fmt.Errorf("build auditor: %w", err)
 	}
 	defer func() { _ = auditor.Close() }()
+	// audit_enabled is 1 when an async sink is active, 0 otherwise — including when
+	// a configured sink FAILED to init and silently degraded to no-audit. Alert on
+	// 0 where a sink was expected, so a shield that booted without audit is visible.
+	auditEnabled := 0.0
+	if auditBuf != nil {
+		auditEnabled = 1.0
+	}
+	m.RegisterGaugeFunc("audit_enabled",
+		"1 if an audit sink is active, 0 if audit is off (unconfigured OR a sink that failed to init and degraded).",
+		func() float64 { return auditEnabled })
 	if auditBuf != nil {
 		// Surface audit back-pressure so silently-lost evidence is observable.
 		m.RegisterCounterFunc("audit_events_dropped_total",
 			"Audit events dropped due to a full queue or rate cap.",
 			func() float64 { return float64(auditBuf.Dropped()) })
+		m.RegisterCounterFunc("audit_export_errors_total",
+			"Audit events the sink failed to write (e.g. ClickHouse unreachable, or rejecting inserts when its server disk is full). Alert on a rising rate.",
+			func() float64 { return float64(auditBuf.Failed()) })
 		m.RegisterGaugeFunc("audit_queue_depth",
 			"Current depth of the async audit queue.",
 			func() float64 { return float64(auditBuf.QueueLen()) })
+	}
+
+	// Optional: push metrics to an OTel Collector (OTLP/gRPC) instead of relying
+	// only on /metrics scraping — the collector forwards them on (e.g. to
+	// VictoriaMetrics), matching Envoy's stats-sink pipeline. Non-fatal: on init
+	// failure shield keeps running and the /metrics scrape endpoint still works.
+	if cfg.metricsOTLPEndpoint != "" {
+		shutdownMetrics, merr := metricsotlp.Start(ctx, m.Registry(), metricsotlp.Options{
+			Endpoint: cfg.metricsOTLPEndpoint,
+			Insecure: cfg.metricsOTLPInsecure,
+			Interval: cfg.metricsOTLPInterval,
+			Instance: cfg.instanceID,
+		})
+		if merr != nil {
+			logger.Error("metrics OTLP push init failed; continuing with /metrics scrape only", logging.Err(merr))
+		} else {
+			logger.Info("metrics OTLP push enabled", "endpoint", cfg.metricsOTLPEndpoint, "interval", cfg.metricsOTLPInterval.String())
+			defer func() {
+				sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = shutdownMetrics(sctx)
+			}()
+		}
 	}
 
 	// Runtime store + reloader. Start empty (safe startup with no config) and
@@ -413,35 +468,46 @@ func run(cfg appConfig, logger *slog.Logger) error {
 // buildAuditor returns the auditor and, when an async sink is configured, the
 // BufferedExporter (so its drop/queue stats can back metrics). The buffered
 // exporter is nil for the "none" sink.
+// buildAuditor selects the audit sink. There is NO local-file sink: audit events
+// go to ClickHouse (the default when a DSN is set) or an OTLP collector, and when
+// NEITHER is configured audit is simply skipped — events are never written to a
+// local file. The exporter is always wrapped in an async buffer so emission never
+// blocks the request path. The returned BufferedExporter is nil for the "none"
+// sink.
 func buildAuditor(cfg appConfig, logger *slog.Logger) (*audit.Auditor, *audit.BufferedExporter, error) {
 	name := cfg.auditExporter
 	if name == "" {
-		if cfg.auditFile != "" {
-			name = "file"
-		} else {
+		// Default: ClickHouse when a DSN is set, OTLP when an endpoint is set,
+		// otherwise no audit at all (skip — never fall back to a file).
+		switch {
+		case cfg.auditDSN != "":
+			name = "clickhouse"
+		case cfg.auditEndpoint != "":
+			name = "otel"
+		default:
 			name = "none"
 		}
 	}
-
-	var exp audit.Exporter
-	var err error
-	switch name {
-	case "none":
+	if name == "none" {
 		return audit.NewAuditor(nil, logger), nil, nil
-	case "file":
-		if cfg.auditFile == "" {
-			return nil, nil, errors.New("file audit exporter requires --audit-file")
-		}
-		exp, err = audit.NewFileExporter(cfg.auditFile)
-	default:
-		exp, err = audit.NewExporter(name, audit.ExporterOptions{
-			DSN:      cfg.auditDSN,
-			Endpoint: cfg.auditEndpoint,
-			Insecure: cfg.auditInsecure,
-		})
 	}
+
+	exp, err := audit.NewExporter(name, audit.ExporterOptions{
+		DSN:           cfg.auditDSN,
+		Endpoint:      cfg.auditEndpoint,
+		Insecure:      cfg.auditInsecure,
+		Table:         cfg.auditCHTable,
+		BatchSize:     cfg.auditCHBatchSize,
+		FlushInterval: cfg.auditCHFlushInterval,
+		TTLDays:       cfg.auditCHTTLDays,
+	})
 	if err != nil {
-		return nil, nil, err
+		// Never let an unreachable/misconfigured remote audit sink stop the
+		// sidecar from protecting traffic: log and degrade to no audit. The
+		// sink can be fixed and shield restarted without a traffic outage.
+		logger.Error("audit exporter init failed; continuing without audit",
+			logging.Err(err), "exporter", name)
+		return audit.NewAuditor(nil, logger), nil, nil
 	}
 	// Async + bounded + multi-worker so audit never blocks the request path; the
 	// rate cap is applied in the workers (off the request goroutine).
@@ -496,12 +562,19 @@ func parseFlags(args []string) appConfig {
 	fs.Int64Var(&cfg.maxInFlightBody, "max-inflight-body-bytes", envInt64("ELCHI_SHIELD_MAX_INFLIGHT_BODY_BYTES", 256<<20), "cap on total body bytes buffered across all concurrent streams (0 = unbounded)")
 	fs.DurationVar(&cfg.debounce, "watch-debounce", envDuration("ELCHI_SHIELD_WATCH_DEBOUNCE", 300*time.Millisecond), "config watcher debounce window")
 	fs.BoolVar(&cfg.defaultAllow, "default-allow", envBool("ELCHI_SHIELD_DEFAULT_ALLOW", true), "posture when no policy matches: allow (true) or deny (false)")
-	fs.StringVar(&cfg.auditExporter, "audit-exporter", env("ELCHI_SHIELD_AUDIT_EXPORTER", ""), "audit sink: none|file|clickhouse|otel")
-	fs.StringVar(&cfg.auditFile, "audit-file", env("ELCHI_SHIELD_AUDIT_FILE", ""), "path to NDJSON audit log (used by the file exporter)")
-	fs.StringVar(&cfg.auditDSN, "audit-clickhouse-dsn", env("ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN", ""), "ClickHouse DSN for the clickhouse audit exporter")
+	fs.StringVar(&cfg.configFile, "config-file", env("ELCHI_SHIELD_CONFIG_FILE", ""), "optional process-config YAML for the audit/metrics SINK settings (DSN, OTLP endpoint, …); flags/env override it. Separate from --config-dir (policies).")
+	fs.StringVar(&cfg.auditExporter, "audit-exporter", env("ELCHI_SHIELD_AUDIT_EXPORTER", ""), "audit sink: none|clickhouse|otel (default: clickhouse if --audit-clickhouse-dsn is set, otel if --audit-otel-endpoint is set, else none — there is no local-file sink)")
+	fs.StringVar(&cfg.auditDSN, "audit-clickhouse-dsn", env("ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN", ""), "ClickHouse DSN for the clickhouse audit exporter (the default audit sink when set)")
 	fs.StringVar(&cfg.auditEndpoint, "audit-otel-endpoint", env("ELCHI_SHIELD_AUDIT_OTEL_ENDPOINT", ""), "OTLP endpoint for the otel audit exporter")
 	fs.BoolVar(&cfg.auditInsecure, "audit-otel-insecure", envBool("ELCHI_SHIELD_AUDIT_OTEL_INSECURE", false), "use an insecure (plaintext) OTLP connection")
 	fs.Float64Var(&cfg.auditMaxPerSec, "audit-max-per-sec", envFloat("ELCHI_SHIELD_AUDIT_MAX_PER_SEC", 0), "dynamic-sampling cap on non-finding audit events/sec (0 = unlimited)")
+	fs.StringVar(&cfg.auditCHTable, "audit-clickhouse-table", env("ELCHI_SHIELD_AUDIT_CLICKHOUSE_TABLE", ""), "ClickHouse audit table name (default elchi_shield_audit)")
+	fs.IntVar(&cfg.auditCHBatchSize, "audit-clickhouse-batch-size", envInt("ELCHI_SHIELD_AUDIT_CLICKHOUSE_BATCH_SIZE", 0), "ClickHouse insert batch size (0 = default 500)")
+	fs.DurationVar(&cfg.auditCHFlushInterval, "audit-clickhouse-flush-interval", envDuration("ELCHI_SHIELD_AUDIT_CLICKHOUSE_FLUSH_INTERVAL", time.Second), "ClickHouse time-based flush so low-traffic rows land promptly (0 = size-only)")
+	fs.IntVar(&cfg.auditCHTTLDays, "audit-clickhouse-ttl-days", envInt("ELCHI_SHIELD_AUDIT_CLICKHOUSE_TTL_DAYS", 0), "ClickHouse audit row TTL in days (0 = default 7, matching the collector's retention)")
+	fs.StringVar(&cfg.metricsOTLPEndpoint, "metrics-otlp-endpoint", env("ELCHI_SHIELD_METRICS_OTLP_ENDPOINT", ""), "push metrics to this OTel Collector (OTLP/gRPC host:port); empty = scrape /metrics only")
+	fs.BoolVar(&cfg.metricsOTLPInsecure, "metrics-otlp-insecure", envBool("ELCHI_SHIELD_METRICS_OTLP_INSECURE", false), "use an insecure (plaintext) OTLP/gRPC connection to the metrics collector")
+	fs.DurationVar(&cfg.metricsOTLPInterval, "metrics-otlp-interval", envDuration("ELCHI_SHIELD_METRICS_OTLP_INTERVAL", 15*time.Second), "metrics push interval to the OTel Collector")
 	fs.StringVar(&cfg.logLevel, "log-level", env("ELCHI_SHIELD_LOG_LEVEL", "info"), "log level: debug, info, warn, error")
 	fs.StringVar(&cfg.logFormat, "log-format", env("ELCHI_SHIELD_LOG_FORMAT", "json"), "log format: json or text")
 	fs.BoolVar(&cfg.logSource, "log-source", envBool("ELCHI_SHIELD_LOG_SOURCE", false), "include source file:line in logs (auto-on at debug level)")

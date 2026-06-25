@@ -69,7 +69,7 @@ stay healthy instead of churning.
 | `sync.Once` (per-policy compile) | first request per policy | one-time |
 | Prometheus internal | only at startup (pre-registration) | no |
 | `RateLimiter` mutex | audit workers only | no |
-| `FileExporter` write mutex | audit worker only | no |
+| ClickHouse exporter batch mutex | audit workers + its flush ticker | no (off the request path) |
 | audit channel | non-blocking send (request) / drain (workers) | send is lock-free-ish, never blocks |
 
 ## Memory & goroutine leak safety

@@ -737,3 +737,48 @@ func TestProcessorGzipBodyDecodedAndInspected(t *testing.T) {
 		t.Fatalf("decoded invalid-JSON gzip body must be blocked, got %#v", out)
 	}
 }
+
+// TestParseNodeID proves shield parses the Envoy node id (listener::project::ip)
+// the same way the collector stamps project_id onto api_events, with safe
+// fallbacks for unexpected shapes.
+func TestParseNodeID(t *testing.T) {
+	cases := []struct{ in, l, p, ip string }{
+		{"lst1::proj-1::10.0.0.1", "lst1", "proj-1", "10.0.0.1"},
+		{"lst1::proj-1", "lst1", "proj-1", ""},
+		{"single", "", "", ""},
+		{"", "", "", ""},
+		{"a::b::c::d", "a", "b", "c::d"},
+	}
+	for _, c := range cases {
+		l, p, ip := parseNodeID(c.in)
+		if l != c.l || p != c.p || ip != c.ip {
+			t.Errorf("parseNodeID(%q) = (%q,%q,%q), want (%q,%q,%q)", c.in, l, p, ip, c.l, c.p, c.ip)
+		}
+	}
+}
+
+// TestProcessorAuditStampsNodeIdentity proves a blocked request's audit event
+// carries the raw node id plus the parsed project/listener (so the central sink
+// can scope events per project) and the HTTP status code.
+func TestProcessorAuditStampsNodeIdentity(t *testing.T) {
+	cap := &captureExporter{}
+	pr := procWithAuditor(t, config.Match{PathPrefix: "/"}, config.PolicySpec{
+		Checks: config.Checks{Headers: &config.HeaderChecks{Forbidden: []string{"X-Debug"}}},
+	}, audit.NewAuditor(cap, nil))
+
+	req := reqHeaders(":authority", "api.example.com", ":path", "/x", ":method", "GET", "X-Debug", "1")
+	st, _ := structpb.NewStruct(map[string]any{"xds.node.id": "lst1::proj-1::10.0.0.1"})
+	req.Attributes = map[string]*structpb.Struct{"envoy.filters.http.ext_proc": st}
+	run(t, pr, req)
+
+	if len(cap.events) != 1 {
+		t.Fatalf("expected 1 audit event for the block, got %d", len(cap.events))
+	}
+	ev := cap.events[0]
+	if ev.NodeID != "lst1::proj-1::10.0.0.1" || ev.ProjectID != "proj-1" || ev.Listener != "lst1" {
+		t.Fatalf("node identity not stamped: node=%q project=%q listener=%q", ev.NodeID, ev.ProjectID, ev.Listener)
+	}
+	if ev.Decision.StatusCode != 403 {
+		t.Fatalf("blocked event should carry status 403, got %d", ev.Decision.StatusCode)
+	}
+}

@@ -32,3 +32,4 @@ PLAN.md
 test/e2e/*.bin
 # e2e HTML report (generated per run)
 test/e2e/report.html
+docs/plans/*

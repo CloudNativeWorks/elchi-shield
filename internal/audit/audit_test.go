@@ -1,12 +1,9 @@
 package audit
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,12 +11,10 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 )
 
-func TestFileExporterWritesNDJSON(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	exp, err := NewFileExporter(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+// TestEventMarshalsRedactedJSON proves the audit Event serializes to JSON with
+// the decision enums as readable strings and without leaking sensitive header
+// names — the same contract every sink (ClickHouse/OTLP) relies on.
+func TestEventMarshalsRedactedJSON(t *testing.T) {
 	ev := &Event{
 		Timestamp: time.Unix(0, 0).UTC(),
 		RequestID: "r1",
@@ -27,21 +22,12 @@ func TestFileExporterWritesNDJSON(t *testing.T) {
 		Decision:  decision.Decision{Action: decision.Block, Reason: "forbidden", Severity: decision.SeverityHigh},
 		Host:      "api.example.com",
 	}
-	if err := exp.Export(context.Background(), ev); err != nil {
-		t.Fatal(err)
-	}
-	if err := exp.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	f, _ := os.Open(path)
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	if !sc.Scan() {
-		t.Fatal("expected one line")
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
 	var got map[string]any
-	if err := json.Unmarshal(sc.Bytes(), &got); err != nil {
+	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("not valid JSON: %v", err)
 	}
 	if got["request_id"] != "r1" {
@@ -52,8 +38,8 @@ func TestFileExporterWritesNDJSON(t *testing.T) {
 	if dec["Action"] != "block" || dec["Severity"] != "high" {
 		t.Fatalf("decision enums should be strings: %v", dec)
 	}
-	if strings.Contains(strings.ToLower(sc.Text()), "authorization") {
-		t.Fatal("audit line unexpectedly contains sensitive header name")
+	if strings.Contains(strings.ToLower(string(b)), "authorization") {
+		t.Fatal("audit JSON unexpectedly contains a sensitive header name")
 	}
 }
 

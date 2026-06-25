@@ -9,7 +9,7 @@ COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DOCKER_IMAGE ?= elchi-shield
 LDFLAGS   := -s -w -X main.version=v$(VERSION) -X main.commit=$(COMMIT)
 
-.PHONY: all build run test race bench loadtest loadtest-real profile cover vet lint tidy clean fmt fuzz vuln docker e2e install uninstall
+.PHONY: all build run test race bench loadtest loadtest-real profile cover vet lint tidy clean fmt fuzz vuln docker e2e e2e-clickhouse e2e-fullchain install uninstall
 
 all: vet test build
 
@@ -56,6 +56,21 @@ loadtest-real:
 # (auto-fetched via func-e, or set ENVOY=/path/to/envoy).
 e2e:
 	bash test/e2e/run.sh
+
+# Live audit→ClickHouse e2e: a REAL Envoy → elchi-shield (ClickHouse exporter) →
+# a REAL ClickHouse (Docker), asserting blocked requests land as rows with the
+# parsed project_id/node_id + status_code. Auto-skips without Docker/Envoy.
+# Tunables: CH_IMAGE, CH_NATIVE, ENVOY.
+e2e-clickhouse:
+	bash test/e2e/clickhouse.sh
+
+# Full production-chain e2e: Mongo + ClickHouse (Docker) + the elchi-backend
+# controller + the Envoy/shield/echo stack. Drives blocking traffic, then asserts
+# the backend's /api/v3/shield/events(/summary) API returns those events read from
+# ClickHouse (with an owner JWT) — the exact chain the UI uses. Auto-skips without
+# Docker/Envoy/the backend checkout. Tunables: ELCHI_BACKEND_DIR, CH_IMAGE, MG_IMAGE.
+e2e-fullchain:
+	bash test/e2e/fullchain.sh
 
 # CPU + alloc profiles of the load path.
 profile:

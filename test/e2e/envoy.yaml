@@ -1,7 +1,10 @@
 # Envoy config for the e2e harness: a real Envoy proxying HTTP through the
 # ext_proc filter to elchi-shield, then to a local echo upstream.
 node:
-  id: e2e-envoy-node       # sent to shield via ext_proc request_attributes (xds.node.id)
+  # listener::project_id::ip — the platform's node-id convention. shield receives
+  # this via ext_proc request_attributes (xds.node.id), labels metrics by it, and
+  # parses project_id/listener from it onto each audit event (see the Audit phase).
+  id: e2e-envoy-node::proj-e2e::10.0.0.1
   cluster: e2e
 
 admin:

@@ -83,6 +83,8 @@ ECHO_ADDR=127.0.0.1:18080 "$DIR/echo.bin" & PIDS+=($!)
 # --xff-trusted-hops 1: the harness injects a test client IP as the leftmost XFF
 # token and Envoy appends the real downstream on the right, so one trusted hop
 # makes the shield read the injected IP. (Production default is 0 = rightmost.)
+# No audit sink here: this suite asserts decisions + metrics. Audit→ClickHouse is
+# covered by test/e2e/clickhouse.sh + fullchain.sh and the fake-driver unit tests.
 "$DIR/elchi-shield.bin" --config-dir "$CFG" --extproc-network tcp --extproc-addr 127.0.0.1:9999 \
   --http-addr "$HTTP" --watch-debounce 200ms --xff-trusted-hops 1 --log-level error & PIDS+=($!)
 for _ in $(seq 1 40); do curl -sf "http://${HTTP}/readyz" >/dev/null 2>&1 && break; sleep 0.25; done
@@ -359,8 +361,8 @@ PZ=$(curl -s "http://${HTTP}/policyz?host=api.example.com&path=/block-hdr&method
 case "$PZ" in *'"matched": true'*) P "/policyz resolves a policy";; *) F "/policyz no match";; esac
 MX=$(curl -s "http://${HTTP}/metrics")
 case "$MX" in *elchi_shield_build_info*) P "/metrics has build_info";; *) F "/metrics missing build_info";; esac
-# Metrics are labeled by the Envoy node id (xds.node.id via ext_proc attributes).
-case "$MX" in *'listener="e2e-envoy-node"'*) P "/metrics labeled by Envoy node id (xds.node.id)";; *) F "/metrics missing Envoy node id label";; esac
+# Metrics are labeled by the full Envoy node id (xds.node.id via ext_proc attributes).
+case "$MX" in *'listener="e2e-envoy-node::proj-e2e::10.0.0.1"'*) P "/metrics labeled by Envoy node id (xds.node.id)";; *) F "/metrics missing Envoy node id label";; esac
 case "$MX" in *go_goroutines*) P "/metrics has go_goroutines";; *) F "/metrics missing go_goroutines";; esac
 # findings_total attributes blocks/detections to the engine that produced them.
 case "$MX" in *'findings_total{action="block",engine="coraza"'*) P "/metrics findings_total has per-engine labels (coraza block)";; *) F "/metrics findings_total missing engine attribution";; esac
@@ -390,6 +392,9 @@ COUNTERS="$(curl -s "http://${HTTP}/metrics" | grep -E '^elchi_shield_requests_(
 echo "$COUNTERS" | sed 's/^/    /'
 echo "    --- findings by engine ---"
 curl -s "http://${HTTP}/metrics" | grep -E '^elchi_shield_findings_total' | sort | sed 's/^/    /'
+# Note: audit→ClickHouse content (node-id→project/listener parsing, status_code,
+# query-strip) is asserted by test/e2e/clickhouse.sh + fullchain.sh and the
+# fake-driver unit tests — there is no local-file audit sink to read here.
 
 # ---------------- HTML report ----------------
 # Render every recorded assertion (phase / rule / expected / got / result) into a
