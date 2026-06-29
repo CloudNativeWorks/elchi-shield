@@ -78,6 +78,20 @@ func New(opts audit.ExporterOptions) (*Exporter, error) {
 	if _, set := o.Settings["materialized_views_ignore_errors"]; !set {
 		o.Settings["materialized_views_ignore_errors"] = 1
 	}
+	// Server-side insert batching. Many edge sidecars each stream audit rows to the
+	// same central ClickHouse; without batching every flush creates a fresh part, so
+	// part/merge pressure scales with the edge count (the classic many-small-inserts
+	// anti-pattern). async_insert tells ClickHouse to coalesce inserts across ALL
+	// writers into larger parts, and wait_for_async_insert=0 lets shield's insert
+	// return without blocking on the server-side flush. Audit is already async +
+	// drop-on-full + sampled, so the small in-flight window an async buffer can lose
+	// on a ClickHouse crash is acceptable. (Operator DSN settings still win.)
+	if _, set := o.Settings["async_insert"]; !set {
+		o.Settings["async_insert"] = 1
+	}
+	if _, set := o.Settings["wait_for_async_insert"]; !set {
+		o.Settings["wait_for_async_insert"] = 0
+	}
 	// Best-effort: create the target database if it doesn't exist yet on a fresh
 	// central ClickHouse (the collector/installer normally provisions it) via a
 	// transient connection to the always-present `default` DB — mirroring
