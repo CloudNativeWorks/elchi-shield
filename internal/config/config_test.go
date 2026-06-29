@@ -111,6 +111,17 @@ func TestLoadEmptyDir(t *testing.T) {
 	}
 }
 
+// A MISSING config dir (e.g. the agent's reconcile briefly removed it) must be
+// treated like an empty dir — ErrEmptyConfigDir, so the reloader keeps last-good
+// instead of counting a reload failure that upstream misreads as a rejection.
+func TestLoadMissingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does-not-exist")
+	_, err := Load(dir)
+	if !errors.Is(err, ErrEmptyConfigDir) {
+		t.Fatalf("want ErrEmptyConfigDir for a missing dir, got %v", err)
+	}
+}
+
 func TestLoadInvalidApiVersion(t *testing.T) {
 	doc := strings.Replace(validDoc, APIVersionV1, "bad/v2", 1)
 	dir := writeFiles(t, map[string]string{"a.yaml": doc})

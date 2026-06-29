@@ -14,6 +14,15 @@ import (
 func ReadDir(dir string) ([]ParsedFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// A MISSING config dir is "no config", not a hard reload failure. The
+			// agent's atomic reconcile (elchi-client) removes-then-recreates the
+			// watched dir, so a reload fired mid-window briefly sees it absent; the
+			// watcher itself already waits for the dir to (re)appear. Treat it like
+			// an empty dir — keep last-good, WARN, and do NOT advance the
+			// reload-failure counter (which upstream misreads as a config rejection).
+			return nil, ErrEmptyConfigDir
+		}
 		return nil, fmt.Errorf("read config dir %q: %w", dir, err)
 	}
 
