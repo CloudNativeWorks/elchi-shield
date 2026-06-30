@@ -134,10 +134,15 @@ func (pr *Processor) Process(stream extprocv3.ExternalProcessor_ProcessServer) (
 
 	for {
 		req, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
 		if err != nil {
+			// io.EOF is a clean half-close. A Canceled stream (context or gRPC code)
+			// is ALSO a normal teardown: Envoy cancels the per-request ext_proc stream
+			// once the request finishes (or the downstream connection closes). These
+			// are not transport faults — counting them inflated extproc_errors_total on
+			// every request and read like an outage. Only genuine errors are recorded.
+			if errors.Is(err, io.EOF) || isStreamEnded(err) {
+				return nil
+			}
 			pr.metrics.RecordExtprocError("transport")
 			return err
 		}
@@ -150,6 +155,16 @@ func (pr *Processor) Process(stream extprocv3.ExternalProcessor_ProcessServer) (
 			return err
 		}
 	}
+}
+
+// isStreamEnded reports whether a stream.Recv error is a benign end-of-stream
+// rather than a transport fault: the caller (Envoy) canceled the per-request
+// ext_proc stream after the request finished, or the stream context was canceled
+// (e.g. on shutdown). These are normal teardowns and must not be counted as
+// errors. A real fault (transport reset, deadline exceeded, etc.) carries a
+// different code and is still recorded.
+func isStreamEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled
 }
 
 // lmFor returns the metric cursor for this stream's listener label: the Envoy
