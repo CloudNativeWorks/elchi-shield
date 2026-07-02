@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -84,7 +85,11 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 func (d *Duration) parse(s string) error {
 	v, err := time.ParseDuration(s)
 	if err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
+		// Never echo the offending value: this error can reach /configz and the
+		// control plane, and a secret fat-fingered into a duration field (e.g.
+		// hmac_sign.window) must not leak. time.ParseDuration's own error also
+		// quotes the value, so drop the wrap too.
+		return errors.New(`invalid duration: want a Go duration string like "50ms" (e.g. 50ms, 5s, 2m)`)
 	}
 	*d = Duration(v)
 	return nil

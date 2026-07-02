@@ -284,6 +284,11 @@ func (pr *Processor) onRequestHeaders(ctx context.Context, tx *pipeline.Transact
 		return immediateResponse(d)
 	}
 	if tx.BodyRequired() || tx.WAFEnabled() {
+		// A body phase follows; its Run resets tx.findings, so emit any header-phase
+		// detect/shadow findings NOW or they are lost before the terminal finish().
+		if d.Action == decision.Detect || d.Action == decision.Shadow {
+			pr.emitPhaseFindings(ctx, tx, d, "request_headers")
+		}
 		// When end_of_stream is set on the headers message there is no body and
 		// Envoy will send no body message (a GET, or Content-Length: 0). Run the
 		// body pipeline now with the empty buffer so body-phase inspection (e.g.
@@ -370,8 +375,11 @@ func (pr *Processor) onRequestBody(ctx context.Context, tx *pipeline.Transaction
 	pr.appendBody(tx, pipeline.DirectionRequest, b.GetBody())
 	// Inspect only at the terminal chunk. When trailers terminate the stream the
 	// final body chunk carries end_of_stream=false and onRequestTrailers runs the
-	// inspection instead.
-	if !b.GetEndOfStream() {
+	// inspection instead — EXCEPT for a body-MUTATING policy (DLP redaction): a
+	// mutation can't be carried by the trailers message, and under BUFFERED body
+	// mode this message already holds the complete body, so redact here or the
+	// un-redacted body is forwarded.
+	if !b.GetEndOfStream() && !tx.Policy.MutatesBody(false) {
 		return requestBodyContinue()
 	}
 	if bd := pr.inspectBufferedBody(ctx, tx, start); bd != nil && bd.IsBlock() {
@@ -415,13 +423,18 @@ func (pr *Processor) onResponseHeaders(ctx context.Context, tx *pipeline.Transac
 		return immediateResponse(d)
 	}
 	if tx.BodyRequired() || tx.WAFEnabled() {
+		// A response body phase follows; its Run resets tx.findings, so emit any
+		// response-header detect/shadow findings now (see the request-headers twin).
+		if d.Action == decision.Detect || d.Action == decision.Shadow {
+			pr.emitPhaseFindings(ctx, tx, d, "response_headers")
+		}
 		if h.GetEndOfStream() { // no response body will follow
 			if bd := pr.inspectBufferedBody(ctx, tx, start); bd != nil && bd.IsBlock() {
 				return immediateResponse(bd)
 			}
 			return responseHeadersContinue(nil)
 		}
-		return responseHeadersContinue(&procmodev3.ProcessingMode{ResponseBodyMode: procmodev3.ProcessingMode_BUFFERED})
+		return responseHeadersContinue(modeBufferResponseBody)
 	}
 	pr.finish(ctx, tx, d, "response_headers", start)
 	return responseHeadersContinue(nil)
@@ -430,7 +443,11 @@ func (pr *Processor) onResponseHeaders(ctx context.Context, tx *pipeline.Transac
 func (pr *Processor) onResponseBody(ctx context.Context, tx *pipeline.Transaction, b *extprocv3.HttpBody) *extprocv3.ProcessingResponse {
 	start := time.Now()
 	pr.appendBody(tx, pipeline.DirectionResponse, b.GetBody())
-	if !b.GetEndOfStream() {
+	// See onRequestBody: defer to trailers on a non-terminal chunk, unless the
+	// policy redacts the body (DLP) — that mutation must be applied at this body
+	// message (complete under BUFFERED mode) because a trailers response can't carry
+	// it, else the un-redacted response leaks downstream.
+	if !b.GetEndOfStream() && !tx.Policy.MutatesBody(true) {
 		return responseBodyContinue()
 	}
 	if bd := pr.inspectBufferedBody(ctx, tx, start); bd != nil && bd.IsBlock() {
@@ -564,6 +581,18 @@ func (pr *Processor) finish(ctx context.Context, tx *pipeline.Transaction, d *de
 	if tx.BodyRequired() {
 		pr.lmFor(tx).RecordBodyBytes(len(tx.Body()))
 	}
+	pr.emitAudit(ctx, tx, d, phase)
+}
+
+// emitPhaseFindings records + audits the detect/shadow findings of a NON-terminal
+// phase (a header phase followed by a body phase whose Run resets tx.findings).
+// Without it a header-phase detection on a body-inspecting route is silently wiped
+// before the terminal finish() runs — lost from detections_total, findings_total
+// AND audit. It records the finding metrics only; the per-request tally stays with
+// the terminal phase. Off the hot path: only invoked when the header phase already
+// produced a detect/shadow finding.
+func (pr *Processor) emitPhaseFindings(ctx context.Context, tx *pipeline.Transaction, d *decision.Decision, phase string) {
+	pr.lmFor(tx).RecordPhaseFindings(d)
 	pr.emitAudit(ctx, tx, d, phase)
 }
 
@@ -754,19 +783,49 @@ func immediateResponse(d *decision.Decision) *extprocv3.ProcessingResponse {
 // blockHeaders sets response headers on a block: a marker so the block is
 // attributable downstream, and Retry-After on a 429 so rate-limited clients back
 // off. No request payload is echoed (no info leak).
+// blockHeaders returns the SetHeaders mutation for a block. The two variants
+// (default, and 429 with Retry-After) are immutable and gRPC only reads them, so
+// they're built once and shared — a WAF under attack blocks a flood, so this keeps
+// the enforcement path allocation-free too. An uncommon code reuses the default.
 func blockHeaders(code int) *extprocv3.HeaderMutation {
-	headers := []*corev3.HeaderValueOption{{
-		Header: &corev3.HeaderValue{Key: "x-elchi-shield", Value: "blocked"},
-	}}
 	if code == 429 {
-		headers = append(headers, &corev3.HeaderValueOption{
-			Header: &corev3.HeaderValue{Key: "Retry-After", Value: "1"},
-		})
+		return blockHeaders429
 	}
-	return &extprocv3.HeaderMutation{SetHeaders: headers}
+	return blockHeadersDefault
 }
 
+var (
+	blockHeadersDefault = &extprocv3.HeaderMutation{SetHeaders: []*corev3.HeaderValueOption{{
+		Header: &corev3.HeaderValue{Key: "x-elchi-shield", Value: "blocked"},
+	}}}
+	blockHeaders429 = &extprocv3.HeaderMutation{SetHeaders: []*corev3.HeaderValueOption{
+		{Header: &corev3.HeaderValue{Key: "x-elchi-shield", Value: "blocked"}},
+		{Header: &corev3.HeaderValue{Key: "Retry-After", Value: "1"}},
+	}}
+)
+
+// requestHeadersContinue returns the CONTINUE response for the request-headers
+// message with the given (immutable, shared) ModeOverride. The response itself is
+// immutable and gRPC only reads it, so the four distinct (CONTINUE × mode)
+// combinations are built once and shared — this is the single most common response
+// on the allowed path, so per-request it saves the four-object proto allocation.
+// requestMode only ever yields nil or one of the three shared mode pointers.
 func requestHeadersContinue(mode *procmodev3.ProcessingMode) *extprocv3.ProcessingResponse {
+	switch mode {
+	case nil:
+		return respReqHdrContinue
+	case modeSkipResponse:
+		return respReqHdrContinueSkipResp
+	case modeBufferBody:
+		return respReqHdrContinueBuffer
+	case modeBufferBodySkipResponse:
+		return respReqHdrContinueBufferSkip
+	default:
+		return buildReqHdrContinue(mode) // defensive: unrecognized mode (not hit in practice)
+	}
+}
+
+func buildReqHdrContinue(mode *procmodev3.ProcessingMode) *extprocv3.ProcessingResponse {
 	return &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_RequestHeaders{
 			RequestHeaders: &extprocv3.HeadersResponse{Response: &extprocv3.CommonResponse{Status: extprocv3.CommonResponse_CONTINUE}},
@@ -775,7 +834,28 @@ func requestHeadersContinue(mode *procmodev3.ProcessingMode) *extprocv3.Processi
 	}
 }
 
+var (
+	respReqHdrContinue           = buildReqHdrContinue(nil)
+	respReqHdrContinueSkipResp   = buildReqHdrContinue(modeSkipResponse)
+	respReqHdrContinueBuffer     = buildReqHdrContinue(modeBufferBody)
+	respReqHdrContinueBufferSkip = buildReqHdrContinue(modeBufferBodySkipResponse)
+)
+
+// responseHeadersContinue mirrors requestHeadersContinue for the response-headers
+// message. The only two modes used are nil and the shared buffer-response-body
+// override, so both are pre-built and shared.
 func responseHeadersContinue(mode *procmodev3.ProcessingMode) *extprocv3.ProcessingResponse {
+	switch mode {
+	case nil:
+		return respRespHdrContinue
+	case modeBufferResponseBody:
+		return respRespHdrContinueBuffer
+	default:
+		return buildRespHdrContinue(mode)
+	}
+}
+
+func buildRespHdrContinue(mode *procmodev3.ProcessingMode) *extprocv3.ProcessingResponse {
 	return &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_ResponseHeaders{
 			ResponseHeaders: &extprocv3.HeadersResponse{Response: &extprocv3.CommonResponse{Status: extprocv3.CommonResponse_CONTINUE}},
@@ -783,6 +863,14 @@ func responseHeadersContinue(mode *procmodev3.ProcessingMode) *extprocv3.Process
 		ModeOverride: mode,
 	}
 }
+
+// modeBufferResponseBody asks Envoy to buffer the response body (shared: gRPC only
+// reads it). respRespHdrContinueBuffer carries it.
+var (
+	modeBufferResponseBody    = &procmodev3.ProcessingMode{ResponseBodyMode: procmodev3.ProcessingMode_BUFFERED}
+	respRespHdrContinue       = buildRespHdrContinue(nil)
+	respRespHdrContinueBuffer = buildRespHdrContinue(modeBufferResponseBody)
+)
 
 // The no-mutation CONTINUE responses (body/trailers) are immutable and identical
 // every call; gRPC only reads them, so they're built once and shared rather than

@@ -487,6 +487,69 @@ func TestProcessorInFlightBudgetBlocksOversizedAggregate(t *testing.T) {
 	}
 }
 
+// TestProcessorDetectHeaderFindingSurvivesBodyPhase proves that a header-phase
+// detect finding (jwt: missing token) is counted AND audited even when the route
+// also inspects the body — the body pipeline's Run resets tx.findings, so without
+// emitting at the header phase the detection was silently lost from
+// detections_total / findings_total / audit.
+func TestProcessorDetectHeaderFindingSurvivesBodyPhase(t *testing.T) {
+	m := metrics.New("")
+	detect := config.ModeDetect
+	tru := true
+	maxBody := int64(1 << 20)
+	cap := &captureExporter{}
+	cfg := &config.MergedConfig{
+		Sources: []string{"t"},
+		Domains: []config.MergedDomain{{Source: "t", Domain: config.Domain{
+			Hosts: []string{"api.example.com"},
+			Routes: []config.Route{{Match: config.Match{PathPrefix: "/"}, Policy: config.PolicySpec{
+				Mode:                new(detect),
+				InspectRequestBody:  &tru, // forces a body phase after the header phase
+				MaxRequestBodyBytes: &maxBody,
+				Checks:              config.Checks{Body: &config.BodyChecks{RequireJSON: true}},
+				Engines: &config.EnginesSpec{JWT: &config.JWTSpec{
+					Algorithms: []string{"HS256"}, HMACSecret: "secret", Audience: "api",
+				}},
+			}}},
+		}}},
+	}
+	snap, err := runtime.NewSnapshot(cfg, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := stages.NewCatalog(stages.Deps{DefaultAllow: true})
+	m.RegisterStages(cat.StageNames())
+	pr := NewProcessor(Config{Store: runtime.NewStore(snap), Pool: pipeline.NewPool(), Catalog: cat, Metrics: m, MaxBody: 1 << 20, Auditor: audit.NewAuditor(cap, nil)})
+
+	// No Authorization → jwt detects at the header phase; a valid JSON body passes
+	// the body check, so the ONLY finding is the header-phase jwt detection.
+	out := run(t, pr,
+		reqHeaders(":authority", "api.example.com", ":path", "/x", ":method", "POST", "content-type", "application/json"),
+		reqBody(`{"ok":true}`, true),
+	)
+	// Detect mode never blocks.
+	for _, o := range out {
+		if isImmediate(o) {
+			t.Fatalf("detect mode must not block, got immediate: %#v", o)
+		}
+	}
+	if got := sumMetric(t, m, "detections_total"); got != 1 {
+		t.Fatalf("header-phase jwt detection must be counted: detections_total=%v, want 1", got)
+	}
+	if got := sumMetric(t, m, "requests_total"); got != 1 {
+		t.Fatalf("request must be counted exactly once: requests_total=%v, want 1", got)
+	}
+	found := false
+	for _, ev := range cap.events {
+		if ev.Decision.RuleID == "jwt.missing" && ev.Decision.Action == decision.Detect {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the header-phase jwt detection must be audited; got events %+v", cap.events)
+	}
+}
+
 // TestProcessorHeaderOnlyPolicyTrailersNoDoubleFinish proves that a header-only
 // policy (no body inspection) that already decided at the header phase does NOT
 // run body inspection again when a stray trailers message arrives — guarding

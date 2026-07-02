@@ -432,6 +432,27 @@ func (lm *ListenerMetrics) RecordDecision(d *decision.Decision, phase string, la
 	}
 }
 
+// RecordPhaseFindings records the detect/shadow finding metrics (the detections/
+// shadow counter + per-engine findings_total) for a NON-TERMINAL phase — one whose
+// finish() will not run because a later phase is terminal. It deliberately omits
+// the per-request tally (requests_total / allowed): that is recorded exactly once
+// by the terminal phase's RecordDecision, so a header detection on a body-
+// inspecting route is counted without inflating the request count. A block never
+// reaches this path (it short-circuits and finishes immediately).
+func (lm *ListenerMetrics) RecordPhaseFindings(d *decision.Decision) {
+	if lm == nil || d == nil {
+		return
+	}
+	switch d.Action {
+	case decision.Detect:
+		lm.detect.Inc()
+		lm.recordFinding(d.Engine, "detect")
+	case decision.Shadow:
+		lm.shadow.Inc()
+		lm.recordFinding(d.Engine, "shadow")
+	}
+}
+
 // RecordBodyMutation counts one DLP body redaction (the body was rewritten for
 // forwarding).
 func (lm *ListenerMetrics) RecordBodyMutation() {

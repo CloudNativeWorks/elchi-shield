@@ -47,6 +47,13 @@ func ReadDir(dir string) ([]ParsedFile, error) {
 	for _, name := range names {
 		data, rerr := os.ReadFile(name)
 		if rerr != nil {
+			if os.IsNotExist(rerr) {
+				// The file vanished between listing and read — a transient window of
+				// the client's atomic reconcile (a rename/prune racing this scan), not
+				// a config error. Skip it like the missing-dir case above rather than
+				// record a spurious rejection reason; the next fs event re-reads.
+				continue
+			}
 			merr.Add(newFileError(name, "", fmt.Errorf("read: %w", rerr)))
 			continue
 		}

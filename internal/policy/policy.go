@@ -179,6 +179,26 @@ func (p *CompiledPolicy) NeedsResponseInspection() bool {
 	return p.Engines.InspectsResponse()
 }
 
+// MutatesBody reports whether the policy may REWRITE the body in the given
+// direction (DLP redaction). The processor uses this to decide it must inspect a
+// TRAILERED body at the body message rather than deferring to the trailers
+// message: a body mutation cannot be carried by a trailers response, so deferring
+// would forward the un-redacted body. (A block-only DLP needs no early pass — a
+// block still works from the trailers message via an immediate response.)
+func (p *CompiledPolicy) MutatesBody(onResponse bool) bool {
+	if p == nil {
+		return false
+	}
+	dlp := p.Checks.DLP
+	if dlp == nil || len(dlp.Redact) == 0 {
+		return false
+	}
+	if onResponse {
+		return dlp.OnResponse
+	}
+	return dlp.OnRequest
+}
+
 // Shadowing reports whether the policy is in shadow mode.
 func (p *CompiledPolicy) Shadowing() bool { return p.Mode == config.ModeShadow }
 

@@ -321,6 +321,9 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	// attempt an initial load so a restart restores the last config from disk.
 	store := runtime.NewStore(runtime.EmptySnapshot(time.Now()))
 	reloader := runtime.NewReloader(store, cfg.configDir, time.Now)
+	// Tracks the last REJECTED reload's attributed reason so /configz can surface
+	// WHY a config was kept out (not just that the failure counter moved).
+	reloadStatus := runtime.NewReloadStatus()
 	// A single retirer goroutine closes retired snapshots after a grace period
 	// (so in-flight requests that pinned them finish first). Using one bounded
 	// queue + one worker — instead of a goroutine per reload — keeps goroutines
@@ -355,7 +358,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 			}(old)
 		}
 	})
-	doReload(reloader, configLog, m)
+	doReload(reloader, configLog, m, reloadStatus)
 
 	// Stage catalog: fixed preludes + the reorderable inspectors. Per-policy
 	// pipelines are compiled lazily from each policy's order. Metrics is the
@@ -410,18 +413,21 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	// sidecar with no policy is not protecting anything, so it is not ready.
 	configInfo := func() httpserver.ConfigInfo {
 		s := store.Load()
+		lastErr, failures, _ := reloadStatus.Snapshot()
 		return httpserver.ConfigInfo{
-			Version:   s.Version(),
-			Hash:      s.Hash(),
-			Sources:   s.Sources(),
-			Domains:   s.DomainCount(),
-			Empty:     s.IsEmpty(),
-			BuiltAt:   s.BuiltAt().UTC().Format(time.RFC3339),
-			AgeSec:    time.Since(s.BuiltAt()).Seconds(),
-			Instance:  cfg.instanceID,
-			Build:     bVer,
-			Revision:  bRev,
-			GoVersion: bGo,
+			Version:            s.Version(),
+			Hash:               s.Hash(),
+			Sources:            s.Sources(),
+			Domains:            s.DomainCount(),
+			Empty:              s.IsEmpty(),
+			BuiltAt:            s.BuiltAt().UTC().Format(time.RFC3339),
+			AgeSec:             time.Since(s.BuiltAt()).Seconds(),
+			Instance:           cfg.instanceID,
+			Build:              bVer,
+			Revision:           bRev,
+			GoVersion:          bGo,
+			LastReloadError:    lastErr,
+			LastReloadFailures: failures,
 		}
 	}
 	httpSrv := httpserver.NewServer(cfg.httpAddr, m.Registry(),
@@ -434,7 +440,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	}()
 
 	// Start the config watcher: each settled change triggers a reload.
-	w, err := watcher.New(cfg.configDir, cfg.debounce, func() { doReload(reloader, configLog, m) }, watcherLog)
+	w, err := watcher.New(cfg.configDir, cfg.debounce, func() { doReload(reloader, configLog, m, reloadStatus) }, watcherLog)
 	if err != nil {
 		return fmt.Errorf("create watcher: %w", err)
 	}
@@ -520,24 +526,52 @@ func buildAuditor(cfg appConfig, logger *slog.Logger) (*audit.Auditor, *audit.Bu
 const auditWorkers = 2
 
 // doReload runs one reload, records metrics, and logs the outcome. Failures keep
-// the last-good snapshot active and are logged with the attributed config error.
-func doReload(r *runtime.Reloader, logger *slog.Logger, m *metrics.Metrics) {
+// the last-good snapshot active and are logged with the attributed config error;
+// that same reason is recorded on status so /configz (and the elchi-client
+// confirmation probe) can report WHY the newer config was rejected.
+func doReload(r *runtime.Reloader, logger *slog.Logger, m *metrics.Metrics, status *runtime.ReloadStatus) {
 	out, snap, err := r.Reload()
 	m.RecordReload(out, snap.Version())
 	switch out {
 	case runtime.OutcomeApplied:
+		status.RecordSuccess()
 		logger.Info("config reloaded",
 			logging.KeyConfigVersion, snap.Version(),
 			"domains", snap.DomainCount(),
 			"sources", snap.Sources())
 	case runtime.OutcomeUnchanged:
+		// A valid config's hash matched the active one — the sidecar is healthy, so
+		// clear any prior failure reason. (A rejected config never reaches Unchanged;
+		// it fails compile → OutcomeFailed, so this only fires for good configs.)
+		status.RecordSuccess()
 		logger.Debug("config unchanged", logging.KeyConfigVersion, snap.Version())
 	case runtime.OutcomeEmpty:
+		// Do NOT clear the failure reason here: an emptied dir is usually the
+		// transient remove-then-recreate window of an elchi-client push, not
+		// evidence that a rejected config became valid. Clearing it would wipe the
+		// "why" while the daemon is still on last-good — exactly when the pushing
+		// client needs it. The reason stays pinned until a real config Applies.
 		logger.Warn("no config files found, keeping current config", logging.KeyConfigVersion, snap.Version())
 	case runtime.OutcomeFailed:
+		// Cap the reason so a config with many field errors can't push a multi-KB
+		// string off-box (/configz → control plane → UI). The full detail stays in
+		// the local log below.
+		status.RecordFailure(capReason(err.Error()), time.Now())
 		logger.Error("config reload failed, keeping last-good config",
 			logging.KeyConfigVersion, snap.Version(), logging.Err(err))
 	}
+}
+
+// maxReasonBytes bounds the reload-failure reason that leaves the box via /configz.
+const maxReasonBytes = 1024
+
+// capReason truncates an over-long reason (a MultiError can aggregate one line per
+// offending field across many files) so the off-box payload stays small.
+func capReason(s string) string {
+	if len(s) <= maxReasonBytes {
+		return s
+	}
+	return s[:maxReasonBytes] + " …(truncated)"
 }
 
 // parseFlags builds appConfig from command-line flags, falling back to

@@ -1,0 +1,197 @@
+# ============================================================================
+#  elchi-shield — COMPREHENSIVE BLOCK demo policy
+# ============================================================================
+# Paste this whole document into the Shield policy editor (YAML mode).
+#
+# Every engine below runs in `block` mode and loads WITHOUT any external files,
+# so the policy compiles as-is (engines that need data files — jwks url/file,
+# xfcc mTLS, openapi spec_file, ip_reputation feeds, bot verified-bot/JA4 feeds —
+# are intentionally left out; add them once the files exist, otherwise the whole
+# config is rejected at load).
+#
+# Each protection lives on its OWN path prefix so the attack script can trigger
+# them one at a time:
+#
+#   /waf/       coraza (OWASP CRS)   → SQLi / XSS in query or body
+#   /ratelimit/ rate_limit           → flood (keyed by X-Demo-Client header)
+#   /bot/       bot                  → bad / empty User-Agent
+#   /graphql    graphql              → over-deep / introspection query
+#   /dlp/       dlp                  → secret in the REQUEST body
+#   /jwt/       jwt (HS256)          → missing / invalid bearer token
+#   /apikey/    api_key              → missing / wrong X-Api-Key
+#   /hmac/      hmac_sign            → missing request signature
+#   /httpsig/   http_signature       → missing RFC 9421 signature
+#   /iprep/     ip_reputation        → source IP in a deny CIDR (needs XFF/remote-addr)
+#   /           coraza (catch-all)   → WAF everything else
+#
+# Host is "*" (any) so it matches whatever :authority your traffic uses.
+# ============================================================================
+apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata:
+  name: demo-block-all
+  labels:
+    purpose: demo
+
+spec:
+  defaults:
+    mode: block
+    fail_mode: fail_open
+    max_request_body_bytes: 1048576   # 1 MiB
+    max_header_bytes: 16384
+    timeout: 200ms
+    log_level: info
+    sampling_rate: 1.0
+
+  domains:
+    - hosts: ["*"]
+      routes:
+
+        # ── 1. WAF — OWASP Core Rule Set (embedded, no files) ────────────────
+        - match:
+            path_prefix: "/waf/"
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              coraza:
+                include_owasp: true
+                inbound_anomaly_threshold: 5   # CRS default; lower = stricter
+
+        # ── 2. Rate limit — keyed by a header so it works without XFF setup ──
+        - match:
+            path_prefix: "/ratelimit/"
+          policy:
+            mode: block
+            engines:
+              rate_limit:
+                requests_per_second: 2
+                burst: 3
+                key: header
+                header: "X-Demo-Client"
+
+        # ── 3. Bot / scanner detection (header phase, inline only) ───────────
+        - match:
+            path_prefix: "/bot/"
+          policy:
+            mode: block
+            engines:
+              bot:
+                score_threshold: 50
+                user_agent:
+                  deny_substrings: ["sqlmap", "nikto", "masscan", "curl", "python-requests"]
+                  block_empty: true
+                  score_known_bot: 40
+                heuristics:
+                  require_accept: true
+                  require_accept_language: true
+                  require_accept_encoding: true
+                  score_per_anomaly: 30
+
+        # ── 4. GraphQL abuse guard (POST + graphql content-type only) ────────
+        - match:
+            path_prefix: "/graphql"
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              graphql:
+                content_types: ["application/json", "application/graphql"]
+                max_depth: 4
+                max_aliases: 5
+                max_root_fields: 10
+                max_total_fields: 50
+                max_operations: 5
+                max_fragment_depth: 16
+                block_introspection: true
+
+        # ── 5. DLP — block hard secrets found in the REQUEST body ────────────
+        - match:
+            path_prefix: "/dlp/"
+          policy:
+            mode: block
+            fail_mode: fail_close
+            inspect_request_body: true
+            checks:
+              body:
+                dlp:
+                  direction: request
+                  block: ["private_key", "aws_access_key", "google_api_key", "slack_token", "github_token"]
+                  redact: ["credit_card", "ssn", "email"]
+
+        # ── 6. JWT auth — HS256 with an inline secret (no key file) ──────────
+        - match:
+            path_prefix: "/jwt/"
+          policy:
+            mode: block
+            fail_mode: fail_close
+            engines:
+              jwt:
+                issuer: "https://demo.local/"
+                audience: "demo-api"
+                algorithms: ["HS256"]
+                hmac_secret: "demo-super-secret-change-me"
+                required_claims: ["sub"]
+
+        # ── 7. API-key auth — missing/wrong key blocks ──────────────────────
+        - match:
+            path_prefix: "/apikey/"
+          policy:
+            mode: block
+            fail_mode: fail_close
+            engines:
+              api_key:
+                source: header
+                name: "X-Api-Key"
+                keys:
+                  - key: "demo-valid-key"      # hashed at load; send this to pass
+                    subject: "demo-client"
+                    scopes: ["read"]
+
+        # ── 8. HMAC request signing — missing signature blocks ──────────────
+        - match:
+            path_prefix: "/hmac/"
+          policy:
+            mode: block
+            fail_mode: fail_close
+            engines:
+              hmac_sign:
+                secret: "demo-hmac-secret"
+                algorithm: sha256
+                window: 300s
+                require_nonce: false
+
+        # ── 9. HTTP Message Signatures (RFC 9421) — missing sig blocks ──────
+        - match:
+            path_prefix: "/httpsig/"
+          policy:
+            mode: block
+            fail_mode: fail_close
+            engines:
+              http_signature:
+                # RFC 9421 hmac-sha256 requires a >= 64-byte shared secret.
+                secret: "demo-httpsig-secret-0123456789-0123456789-0123456789-0123456789-xyz"
+                signature_name: "sig1"
+                max_age: 300s
+
+        # ── 10. IP reputation — deny CIDR list (needs remote-addr/XFF) ───────
+        - match:
+            path_prefix: "/iprep/"
+          policy:
+            mode: block
+            engines:
+              ip_reputation:
+                deny_cidrs:
+                  - "192.0.2.0/24"      # TEST-NET-1 (RFC 5737)
+                  - "198.51.100.0/24"   # TEST-NET-2
+                  - "203.0.113.0/24"    # TEST-NET-3
+
+        # ── Catch-all — WAF everything else ─────────────────────────────────
+        - match:
+            path_prefix: "/"
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              coraza:
+                include_owasp: true

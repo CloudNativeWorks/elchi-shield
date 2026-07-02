@@ -27,6 +27,15 @@ type ConfigInfo struct {
 	Build     string   `json:"build"`
 	Revision  string   `json:"revision"`
 	GoVersion string   `json:"go_version"`
+	// LastReloadError is the attributed reason of the most recent REJECTED reload
+	// (empty when the last reload succeeded). The active config above is still the
+	// last-good one; this surfaces WHY a newer config was kept out so the pushing
+	// control plane can report it instead of a generic "not confirmed". It carries
+	// field/constraint attribution only (e.g. "…secret: must be at least 64
+	// bytes"), never secret values.
+	LastReloadError string `json:"last_reload_error,omitempty"`
+	// LastReloadFailures is the cumulative count of rejected reloads since start.
+	LastReloadFailures uint64 `json:"last_reload_failures,omitempty"`
 }
 
 // Server hosts the operational HTTP endpoints: /healthz (liveness), /readyz
