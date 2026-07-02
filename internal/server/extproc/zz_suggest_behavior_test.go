@@ -233,12 +233,11 @@ spec:
             engines:
               coraza: { include_owasp: true }
 `)
-	// Normal browser-ish headers on BOTH requests so the ONLY difference is the
-	// SQLi payload (otherwise CRS's missing-header anomaly rules — incl. 920280
-	// "Missing Host", which checks the Host request header — would block even a
-	// clean request, masking what we're testing). Real HTTP/1.1 clients send Host;
-	// for HTTP/2-only (:authority) traffic operators should verify Envoy forwards a
-	// Host header, or CRS 920280 fires.
+	// Normal browser-ish headers on BOTH requests so the ONLY difference is the SQLi
+	// payload (otherwise CRS's missing-header anomaly rules would block even a clean
+	// request, masking what we're testing). The Host header is synthesized by the
+	// coraza adapter from :authority when absent, so 920280 doesn't false-positive —
+	// see TestCoraza_AuthorityOnlyNoFalsePositive.
 	normal := []string{"host", "api.example.com", "user-agent", "Mozilla/5.0", "accept", "text/html", "accept-language", "en-US", "accept-encoding", "gzip"}
 	sqli := append([]string{":authority", "api.example.com", ":path", "/items?id=1%27%20OR%20%271%27%3D%271%20--%20", ":method", "GET"}, normal...)
 	if c := blockCode(t, run(t, pr, reqHeadersEOS(sqli...))); c != 403 {
@@ -250,6 +249,42 @@ spec:
 	if len(clean) > 0 && isImmediate(clean[len(clean)-1]) {
 		code := int(clean[len(clean)-1].Response.(*extprocv3.ProcessingResponse_ImmediateResponse).ImmediateResponse.Status.Code)
 		t.Fatalf("clean request must not be blocked, got immediate %d", code)
+	}
+}
+
+// TestCoraza_AuthorityOnlyNoFalsePositive proves the fix for the production false
+// positive where coraza 403'd EVERY request: Envoy (HTTP/2) forwards the authority
+// as :authority, not a Host request header, so CRS rule 920280 ("Missing Host")
+// fired on all traffic. The adapter now synthesizes a Host header from the derived
+// host, so a clean :authority-only request is allowed while attacks still block.
+func TestCoraza_AuthorityOnlyNoFalsePositive(t *testing.T) {
+	pr := procFromYAML(t, `apiVersion: sentinel.elchi.io/v1
+kind: SecurityPolicy
+metadata: { name: t }
+spec:
+  domains:
+    - hosts: ["*"]
+      routes:
+        - match: { path_prefix: "/" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              coraza: { include_owasp: true }
+`)
+	imm := func(out []*extprocv3.ProcessingResponse) bool {
+		return len(out) > 0 && isImmediate(out[len(out)-1])
+	}
+	// Clean request, :authority only, NO Host header (exactly what Envoy sends over
+	// HTTP/2). Must NOT be blocked.
+	clean := []string{":authority", "api.example.com", ":path", "/items?id=42", ":method", "GET", "user-agent", "Mozilla/5.0", "accept", "text/html"}
+	if imm(run(t, pr, reqHeadersEOS(clean...))) {
+		t.Fatal("clean :authority-only request must not be blocked (CRS 920280 regression)")
+	}
+	// An actual attack on the same :authority-only shape must still block.
+	sqli := []string{":authority", "api.example.com", ":path", "/x?id=1%27%20OR%20%271%27%3D%271%20--%20", ":method", "GET", "user-agent", "Mozilla/5.0", "accept", "text/html"}
+	if !imm(run(t, pr, reqHeadersEOS(sqli...))) {
+		t.Fatal("SQLi on :authority-only request must still block")
 	}
 }
 

@@ -168,10 +168,22 @@ func (e *wafEngine) inspectRequest(tx cztypes.Transaction, req *engine.Request) 
 	// rather than an empty address. ProcessURI must precede the header phase.
 	tx.ProcessConnection(req.SourceIP, 0, "", 0)
 	tx.ProcessURI(req.Path, req.Method, "HTTP/1.1")
+	hasHost := false
 	req.Headers.RangeHeaders(func(name, value string) bool {
 		tx.AddRequestHeader(name, value)
+		if strings.EqualFold(name, "host") {
+			hasHost = true
+		}
 		return true
 	})
+	// Envoy forwards the authority as the HTTP/2 `:authority` pseudo-header, not a
+	// `Host` request header — so unless we synthesize one from the (canonical,
+	// precheck-derived) host, CRS rule 920280 ("Request Missing a Host Header",
+	// severity CRITICAL) fires on EVERY request and the WAF 403s all legitimate
+	// traffic. Only added when absent, so genuine HTTP/1.1 Host headers are untouched.
+	if !hasHost && req.Host != "" {
+		tx.AddRequestHeader("host", req.Host)
+	}
 	// SetServerName must run before ProcessRequestHeaders for SERVER_NAME-keyed
 	// rules to see the host in phase 1.
 	tx.SetServerName(req.Host)

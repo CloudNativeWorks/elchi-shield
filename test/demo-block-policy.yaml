@@ -25,6 +25,14 @@
 #   /           coraza (catch-all)   → WAF everything else
 #
 # Host is "*" (any) so it matches whatever :authority your traffic uses.
+#
+# NOTE (production hardening): these routes use `path_prefix`, which is
+# case-SENSITIVE — an attacker sending "/JWT/..." (varied case) would miss the
+# auth route and fall through to the catch-all WAF. path_prefix also covers ALL
+# methods here (good — no method-restriction bypass). For production, prefer a
+# case-insensitive, trailing-slash-tolerant regex per endpoint, e.g.
+# `path_regex: "(?i)^/jwt/.*$"` — which is exactly what the API-Discovery
+# "Suggest policy" feature emits automatically.
 # ============================================================================
 apiVersion: sentinel.elchi.io/v1
 kind: SecurityPolicy
