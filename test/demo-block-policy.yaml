@@ -182,7 +182,11 @@ spec:
                 signature_name: "sig1"
                 max_age: 300s
 
-        # ── 10. IP reputation — deny CIDR list (needs remote-addr/XFF) ───────
+        # ── 10. IP reputation — deny CIDR list ───────────────────────────────
+        # Shield matches the REAL source IP (rightmost X-Forwarded-For, i.e. the
+        # address Envoy appends via use_remote_address) — a client-spoofed leftmost
+        # XFF is ignored by design. To watch this block, replace a CIDR below with
+        # your own egress IP (e.g. "203.0.113.5/32") so your real traffic is denied.
         - match:
             path_prefix: "/iprep/"
           policy:

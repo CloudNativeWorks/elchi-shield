@@ -73,21 +73,40 @@ pass() {
     fi
 }
 
-# rate_limit flood: many quick requests with the same key → some must be 429.
+# iprep_spoof <path> — send a SPOOFED leftmost X-Forwarded-For. Shield must ignore
+# it (anti-spoofing) → the request is NOT blocked, which is the secure outcome (not
+# a leak). If it returns 403, the real source IP is genuinely in the deny CIDR.
+iprep_spoof() {
+    local path="$1" code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 \
+        -H "Host: $HOSTHDR" -H "X-Forwarded-For: 192.0.2.66" "$TARGET$path" 2>/dev/null)
+    if [ "$code" = "403" ]; then
+        printf '  %sBLOCKED%s  %-16s %s(real source IP is in deny_cidrs)%s\n' "$GREEN" "$RST" "IPRep deny" "$DIM" "$RST"
+    else
+        printf '  %signored%s  %-16s %s(spoofed XFF correctly ignored — %s)%s\n' "$DIM" "$RST" "IPRep spoof" "$DIM" "$code" "$RST"
+    fi
+}
+
+# rate_limit flood: fire the requests CONCURRENTLY with the same key so they land
+# inside the same 1s window and cross the burst — sequential curls to a remote host
+# spread out over TLS+latency and let the bucket refill, hiding the limit.
 flood() {
-    local n=8 code blocked=0
-    for _ in $(seq 1 "$n"); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 \
-            -H "Host: $HOSTHDR" -H "X-Demo-Client: attacker" "$TARGET/ratelimit/x" 2>/dev/null)
-        [ "$code" = "429" ] && blocked=$((blocked+1))
+    local n=12 blocked=0 tmp i
+    tmp=$(mktemp -d)
+    for i in $(seq 1 "$n"); do
+        ( curl -s -o /dev/null -w '%{http_code}' --max-time 6 \
+            -H "Host: $HOSTHDR" -H "X-Demo-Client: attacker" "$TARGET/ratelimit/x" >"$tmp/$i" 2>/dev/null ) &
     done
+    wait
+    for i in $(seq 1 "$n"); do [ "$(cat "$tmp/$i" 2>/dev/null)" = "429" ] && blocked=$((blocked+1)); done
+    rm -rf "$tmp"
     TOTAL=$((TOTAL+1))
     if [ "$blocked" -gt 0 ]; then
         BLOCKED=$((BLOCKED+1))
         printf '  %sBLOCKED%s  %-16s %s(%d/%d got 429)%s\n' "$GREEN" "$RST" "RateLimit flood" "$DIM" "$blocked" "$n" "$RST"
     else
         LEAKED=$((LEAKED+1))
-        printf '  %sLEAKED %s  %-16s %s(no 429 — needs use_remote_address or the header key)%s\n' "$RED" "$RST" "RateLimit flood" "$DIM" "$RST"
+        printf '  %sLEAKED %s  %-16s %s(no 429 — check the X-Demo-Client key / limit)%s\n' "$RED" "$RST" "RateLimit flood" "$DIM" "$RST"
     fi
 }
 
@@ -138,8 +157,13 @@ while true; do
     hit  "HMAC missing"    "/hmac/webhook" -X POST --data '{}'
     hit  "HTTPSig missing" "/httpsig/orders"
 
-    # 10. IP reputation (source IP in a deny CIDR; needs XFF/remote-addr honoured)
-    hit "IPRep deny"   "/iprep/orders" -H "X-Forwarded-For: 192.0.2.66"
+    # 10. IP reputation — anti-spoofing: shield derives the source IP from the RIGHT
+    #     of X-Forwarded-For (the address Envoy appends via use_remote_address), so a
+    #     client-supplied leftmost XFF is IGNORED by design. A spoofed 192.0.2.66
+    #     therefore does NOT block — that is CORRECT. To see it block, put your REAL
+    #     egress IP in the policy's deny_cidrs (or set --xff-trusted-hops for a
+    #     trusted proxy). This line reports the secure outcome, not a leak.
+    iprep_spoof "/iprep/orders"
 
     # Baseline — a clean request that must NOT be blocked
     baseline "Legit request" "/health"
