@@ -163,7 +163,16 @@ func (b *bodyChecks) runDLP(tx *pipeline.Transaction, dlp *policy.CompiledDLP, b
 	}
 	redacted, changed := redactBody(body, matches, dlp.Redact)
 	if changed {
-		tx.MutateBody(redacted)
+		if tx.Policy.Blocking() {
+			// Enforce mode: actually rewrite the forwarded body.
+			tx.MutateBody(redacted)
+			return pipeline.Continue(), false
+		}
+		// detect / shadow are observe-only and must NEVER modify traffic: record the
+		// would-redaction (the executor maps this Deny to a recorded-but-allowed event
+		// in detect/shadow) and forward the body UNCHANGED. Otherwise a dry-run policy
+		// would silently mutate live payloads.
+		return denyEngine(tx, engineDLP, "body.dlp_redact_would", "would redact sensitive data (observe-only mode)", decision.SeverityMedium), true
 	}
 	return pipeline.Continue(), false
 }
@@ -180,7 +189,15 @@ func redactBody(body []byte, matches []sensitive.Match, redact map[string]struct
 		if _, ok := redact[m.Kind]; !ok {
 			continue
 		}
-		if m.Start < last { // overlap guard
+		if m.Start < last {
+			// Overlaps an already-masked region. If it extends past that region, the
+			// tail [last, m.End) is still sensitive — mask it too rather than forward
+			// it in the clear (skipping the whole match leaked that tail).
+			if m.End > last {
+				out = append(out, mask(body[last:m.End], m.Kind)...)
+				last = m.End
+				changed = true
+			}
 			continue
 		}
 		out = append(out, body[last:m.Start]...)

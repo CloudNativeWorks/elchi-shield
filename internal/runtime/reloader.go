@@ -81,14 +81,23 @@ func (r *Reloader) Reload() (Outcome, *Snapshot, error) {
 		return OutcomeFailed, r.store.Load(), err
 	}
 
-	snap, err := NewSnapshot(cfg, r.now())
+	// Hash BEFORE compiling the snapshot: an unchanged config short-circuits here
+	// without building the engine set. Compiling first and discarding on "unchanged"
+	// leaked a jwks background-refresher goroutine (never Close()d) and re-ran the
+	// CRS compile on every re-push of identical config — the common case under a
+	// management-plane reconcile.
+	snapHash, err := computeHash(cfg)
 	if err != nil {
 		return OutcomeFailed, r.store.Load(), err
 	}
-
 	prev := r.store.Load()
-	if prev != nil && prev.Hash() == snap.Hash() {
+	if prev != nil && prev.Hash() == snapHash {
 		return OutcomeUnchanged, prev, nil
+	}
+
+	snap, err := NewSnapshot(cfg, r.now())
+	if err != nil {
+		return OutcomeFailed, r.store.Load(), err
 	}
 
 	r.store.Set(snap)

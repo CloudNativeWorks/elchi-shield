@@ -247,25 +247,32 @@ func TestMatchPathNormalization(t *testing.T) {
 	}
 }
 
-func TestFastPreChecksHostAuthorityMismatch(t *testing.T) {
-	pol := compiled(config.ModeBlock, config.Checks{})
-	// :authority and host disagree → host-smuggling → deny.
-	tx := &pipeline.Transaction{
-		Policy:    pol,
-		Direction: pipeline.DirectionRequest,
-		Headers:   hdrs(":authority", "api.example.com", "host", "evil.com"),
+func TestEarlyDecisionHostAuthorityMismatch(t *testing.T) {
+	// The :authority vs Host disagreement is a STRUCTURAL integrity gate in
+	// EarlyDecision, so it must deny regardless of policy mode — including mode:off /
+	// excluded, which otherwise short-circuit before any inspection.
+	stage := EarlyDecision(true)
+	mismatch := func(mode config.Mode) *pipeline.Transaction {
+		return &pipeline.Transaction{
+			Policy:    compiled(mode, config.Checks{}),
+			Direction: pipeline.DirectionRequest,
+			Headers:   hdrs(":authority", "api.example.com", "host", "evil.com"),
+		}
 	}
-	if res := FastPreChecks().Process(bg(), tx); res.Action != pipeline.ActionDeny || res.Decision.RuleID != "header.host_mismatch" {
-		t.Fatalf("host/:authority mismatch must deny, got %+v", res)
+	for _, mode := range []config.Mode{config.ModeBlock, config.ModeOff} {
+		res := stage.Process(bg(), mismatch(mode))
+		if res.Action != pipeline.ActionDeny || res.Decision.RuleID != "header.host_mismatch" {
+			t.Fatalf("mode %q: host/:authority mismatch must deny (structural gate), got %+v", mode, res)
+		}
 	}
-	// Agreement (port/case differences ignored) → continue.
+	// Agreement (port/case differences ignored) → not denied (mode:off then skips).
 	tx2 := &pipeline.Transaction{
-		Policy:    pol,
+		Policy:    compiled(config.ModeOff, config.Checks{}),
 		Direction: pipeline.DirectionRequest,
 		Headers:   hdrs(":authority", "API.example.com:443", "host", "api.example.com"),
 	}
-	if res := FastPreChecks().Process(bg(), tx2); res.Action != pipeline.ActionContinue {
-		t.Fatalf("matching host/:authority should continue, got %+v", res)
+	if res := stage.Process(bg(), tx2); res.Action == pipeline.ActionDeny {
+		t.Fatalf("matching host/:authority must not deny, got %+v", res)
 	}
 }
 

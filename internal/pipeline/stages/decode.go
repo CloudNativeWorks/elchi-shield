@@ -50,6 +50,14 @@ func (bodyContentDecode) Process(_ context.Context, tx *pipeline.Transaction) pi
 	if !ok {
 		return pipeline.Continue()
 	}
+	// Multiple Content-Encoding header lines are a stacked encoding (e.g. an outer
+	// gzip over an inner br), just split across headers instead of comma-joined.
+	// tx.Header returns only the first, so decoding it would hand the still-encoded
+	// inner layer to the WAF as "clean" — block fail-closed like any stacked encoding.
+	if tx.HeaderCount("content-encoding") > 1 {
+		return denyEngine(tx, engineBodyDecode, "body.undecodable_encoding",
+			"body uses stacked content-encodings that cannot be inspected", decision.SeverityMedium)
+	}
 	enc = strings.ToLower(strings.TrimSpace(enc))
 	if enc == "" || enc == "identity" {
 		return pipeline.Continue()
@@ -91,12 +99,15 @@ func decodeBody(enc string, body []byte) ([]byte, error) {
 		return readBounded(zr)
 	case "deflate":
 		// HTTP "deflate" is officially zlib-wrapped, but some clients send raw
-		// DEFLATE. Try zlib first, fall back to raw flate.
+		// DEFLATE. If the bytes ARE a valid zlib stream, decode them as zlib and
+		// return that result verbatim — including a bounded-size (bomb) or corrupt
+		// error, which must block. Only fall back to raw flate when the bytes are not
+		// a zlib stream at all. (Previously a zlib bomb's size error fell through and
+		// triggered a second full raw-flate decompression, doubling the work and
+		// risking a clean-but-wrong inspected body while the real payload passed on.)
 		if zr, err := zlib.NewReader(bytes.NewReader(body)); err == nil {
 			defer func() { _ = zr.Close() }()
-			if out, rerr := readBounded(zr); rerr == nil {
-				return out, nil
-			}
+			return readBounded(zr)
 		}
 		fr := flate.NewReader(bytes.NewReader(body))
 		defer func() { _ = fr.Close() }()

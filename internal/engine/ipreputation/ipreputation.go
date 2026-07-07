@@ -257,6 +257,13 @@ func (g *geoMatch) inspect(ip netip.Addr) (decision.Verdict, bool, error) {
 		if g.blockOnMissing {
 			return block("ipreputation.geo_unknown", "source IP not found in GeoIP database", decision.SeverityLow), true, nil
 		}
+		if g.hasAllow {
+			// A country allow-list is default-deny: an IP absent from the database
+			// has no confirmable country, so it is not on the allow-list and must
+			// not slip through — consistent with the ASN-only branch below. (Without
+			// this, a DB-missing IP bypassed a positive-security geo-fence.)
+			return block("ipreputation.geo_country:unknown", "source country unknown, not in allow-list", decision.SeverityMedium), true, nil
+		}
 		return decision.Verdict{}, false, nil
 	}
 	if rec.Country != "" {

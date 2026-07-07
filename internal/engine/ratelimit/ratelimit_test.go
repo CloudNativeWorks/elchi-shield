@@ -101,18 +101,23 @@ func TestRateLimitPerKeyIsolation(t *testing.T) {
 }
 
 func TestRateLimitKeysOnTrustedSourceIPNotXFF(t *testing.T) {
-	// A spoofable X-Forwarded-For must NOT key the limit. With no derived SourceIP,
-	// rotating the XFF header must not mint fresh buckets — the engine keys only on
-	// SourceIP, so a missing SourceIP means "no key" (not limited), never the
-	// attacker-controlled header.
-	e, _ := New(Config{RequestsPerSecond: 1, Burst: 1, Key: KeyIP})
-	for i, xff := range []string{"9.9.9.1", "9.9.9.2", "9.9.9.3"} {
+	// A spoofable X-Forwarded-For must NOT key the limit: the engine reads only the
+	// pre-derived SourceIP. With no derived SourceIP, all such requests share ONE
+	// unkeyed bucket, so rotating the XFF header cannot mint fresh buckets to evade
+	// the limit (the fix — previously a missing key meant "not limited at all").
+	now := time.Unix(0, 0)
+	e, _ := New(Config{RequestsPerSecond: 1, Burst: 1, Key: KeyIP, now: func() time.Time { return now }})
+	r0 := &engine.Request{Direction: engine.DirectionRequest, Headers: hdrs{"X-Forwarded-For": "9.9.9.1"}}
+	if v, _ := e.Inspect(context.Background(), r0); v.Action == decision.Block {
+		t.Fatal("first unkeyed request should pass (burst 1)")
+	}
+	for i, xff := range []string{"9.9.9.2", "9.9.9.3", "9.9.9.4"} {
 		r := &engine.Request{Direction: engine.DirectionRequest, Headers: hdrs{"X-Forwarded-For": xff}}
-		if v, _ := e.Inspect(context.Background(), r); v.Action == decision.Block {
-			t.Fatalf("request %d: a raw XFF token must not be used as the limit key", i)
+		if v, _ := e.Inspect(context.Background(), r); v.Action != decision.Block {
+			t.Fatalf("request %d: rotating XFF must NOT mint a fresh bucket — shared unkeyed bucket must stay limited", i)
 		}
 	}
-	// With a real derived SourceIP, the limit applies (burst 1 → 2nd blocks).
+	// A real derived SourceIP still gets its own independent bucket.
 	if v, _ := e.Inspect(context.Background(), ipReq("8.8.8.8")); v.Action == decision.Block {
 		t.Fatal("first request for a derived IP should pass")
 	}
@@ -136,13 +141,17 @@ func TestRateLimitHostKeyIgnoresPort(t *testing.T) {
 	}
 }
 
-func TestRateLimitNoKeyDoesNotBlock(t *testing.T) {
-	e, _ := New(Config{RequestsPerSecond: 1, Burst: 1, Key: KeyIP})
-	// No X-Forwarded-For → no key → never block (don't fail-closed on missing IP).
-	for range 5 {
-		if v, _ := e.Inspect(context.Background(), req(hdrs{})); v.Action == decision.Block {
-			t.Fatal("missing key must not block")
-		}
+func TestRateLimitNoKeyUsesSharedBucket(t *testing.T) {
+	// A request with no derivable key shares one "unkeyed" bucket rather than being
+	// exempt: burst 1 → the first passes, the rest block. (Previously a missing key
+	// meant unlimited — a complete bypass by dropping the header/IP.)
+	now := time.Unix(0, 0)
+	e, _ := New(Config{RequestsPerSecond: 1, Burst: 1, Key: KeyIP, now: func() time.Time { return now }})
+	if v, _ := e.Inspect(context.Background(), req(hdrs{})); v.Action == decision.Block {
+		t.Fatal("first unkeyed request should pass (burst 1)")
+	}
+	if v, _ := e.Inspect(context.Background(), req(hdrs{})); v.Action != decision.Block {
+		t.Fatal("second unkeyed request must block — missing key shares one bucket, not exempt")
 	}
 }
 

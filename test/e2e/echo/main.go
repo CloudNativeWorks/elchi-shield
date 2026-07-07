@@ -3,6 +3,7 @@
 //   ?resp=json   → application/json {"ok":true}
 //   ?resp=badjson→ application/json {bad
 //   ?resp=pii    → text/plain with a (Luhn-valid) test credit-card number
+//   ?resp=email  → text/plain with an email (redaction changes body length)
 //   ?resp=coraza → text/plain leaking a marker a Coraza phase:4 rule blocks
 //   (default)    → text/plain "echo <method> <path>"
 package main
@@ -30,6 +31,11 @@ func main() {
 		case "pii":
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprint(w, "card 4111 1111 1111 1111 here")
+		case "email":
+			// A PII value whose redaction CHANGES the body length (unlike a
+			// same-length card mask) — exercises Content-Length recompute.
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(w, "contact user@example.com for support")
 		case "coraza":
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprint(w, "internal leak: CORAZA_RESP_HIT in payload")

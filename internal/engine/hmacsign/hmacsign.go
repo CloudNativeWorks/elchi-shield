@@ -91,7 +91,11 @@ func New(cfg Config) (*Engine, error) {
 	}
 	nonceTTL := cfg.NonceTTL
 	if nonceTTL <= 0 {
-		nonceTTL = window
+		// Default to 2×window, not window: a timestamp may be up to +window in the
+		// future (max accepted skew) and is then valid until ts+window. Measured from
+		// receipt, that is up to 2×window away — so a shorter nonce/MAC TTL would
+		// forget a signature while it is still replay-able. Cover the full lifetime.
+		nonceTTL = 2 * window
 	}
 	newHash := sha256.New
 	if cfg.Algorithm == "sha512" {

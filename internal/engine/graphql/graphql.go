@@ -173,12 +173,22 @@ func queryParam(rawPath, name string) string {
 	return vals.Get(name)
 }
 
+// maxParseTokens bounds the recursive-descent parser BEFORE the depth/complexity
+// guards (which run on the already-parsed AST) can act. gqlparser has no recursion
+// bound, so a deeply-nested query (~900K brackets, still under the 1 MiB body cap and
+// gzip-deliverable) overflows the goroutine stack — a fatal, non-recoverable crash
+// that kills the whole process. A token limit aborts far below that depth. 100K
+// tokens is generous for any real query and well under the ~900K overflow threshold.
+const maxParseTokens = 100_000
+
 // checkQuery parses one GraphQL document and enforces the limits.
 func (e *Engine) checkQuery(q string) (decision.Verdict, bool) {
 	if strings.TrimSpace(q) == "" {
 		return decision.Verdict{}, false
 	}
-	doc, err := parser.ParseQuery(&ast.Source{Input: q, Name: "query"})
+	// Token-bounded parse: never let an attacker drive the recursive-descent parser
+	// off the stack (an unrecoverable process crash) via nested brackets/braces.
+	doc, err := parser.ParseQueryWithTokenLimit(&ast.Source{Input: q, Name: "query"}, maxParseTokens)
 	if err != nil {
 		return block("graphql.parse_error", "GraphQL query failed to parse"), true
 	}

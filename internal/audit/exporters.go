@@ -140,6 +140,10 @@ func NewBufferedExporter(inner Exporter, capacity, workers int, limiter *RateLim
 	return b
 }
 
+// exportTimeout bounds a single inner-sink Export so a hung sink can't stall the
+// audit drain workers.
+const exportTimeout = 5 * time.Second
+
 func (b *BufferedExporter) run() {
 	defer b.wg.Done()
 	for {
@@ -179,7 +183,12 @@ func (b *BufferedExporter) export(ev *Event) {
 		b.dropped.Add(1)
 		return
 	}
-	if err := b.inner.Export(context.Background(), ev); err != nil {
+	// Per-event deadline so a wedged inner sink (a hung write) sheds one slow event
+	// instead of blocking the drain worker — and, with both workers blocked, silently
+	// stopping ALL audit until the sink recovers.
+	ctx, cancel := context.WithTimeout(context.Background(), exportTimeout)
+	defer cancel()
+	if err := b.inner.Export(ctx, ev); err != nil {
 		b.failed.Add(1)
 	}
 }

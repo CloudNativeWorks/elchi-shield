@@ -87,6 +87,10 @@ type Transaction struct {
 	// direction, so the body is inspected exactly once whether the terminal
 	// end-of-stream arrives on the headers, a body chunk, or the trailers message.
 	bodyInspected bool
+	// requestSettled is set once the request direction reaches a terminal decision
+	// (its finish() ran). It lets the server ignore a duplicate/late request-headers
+	// message (a protocol violation) instead of re-resolving and re-tallying it.
+	requestSettled bool
 
 	// bodyMutated is set when an inspector rewrote the body for FORWARDING (DLP
 	// redaction), so the server replaces the data-plane body with tx.body via an
@@ -97,6 +101,10 @@ type Transaction struct {
 	// engines for the current phase; the WAF stage blocks when it crosses the
 	// policy's anomaly threshold. Reset per Run.
 	anomalyScore int
+	// anomalyDenied records that the threshold crossing was already reported this
+	// request direction, so a later phase (in detect/shadow, which don't short-
+	// circuit) doesn't record/audit the same crossing twice. Reset with anomalyScore.
+	anomalyDenied bool
 
 	// bodyReserved is the cumulative bytes this stream has reserved from the
 	// shared body budget (charged as chunks are buffered, released at stream end).
@@ -147,6 +155,19 @@ func (tx *Transaction) Header(name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// HeaderCount returns how many entries carry the named header. Used to detect a
+// stacked Content-Encoding split across multiple header lines (which Header would
+// otherwise only see the first of).
+func (tx *Transaction) HeaderCount(name string) int {
+	n := 0
+	for i := range tx.Headers {
+		if strings.EqualFold(tx.Headers[i].Name, name) {
+			n++
+		}
+	}
+	return n
 }
 
 // RangeHeaders calls fn for each header, stopping early if fn returns false.
@@ -226,9 +247,24 @@ func (tx *Transaction) AddAnomalyScore(n int) { tx.anomalyScore += n }
 // AnomalyScore returns the accumulated anomaly score.
 func (tx *Transaction) AnomalyScore() int { return tx.anomalyScore }
 
+// AnomalyDenied reports whether the anomaly-threshold crossing was already reported
+// this request direction.
+func (tx *Transaction) AnomalyDenied() bool { return tx.anomalyDenied }
+
+// MarkAnomalyDenied records that the anomaly-threshold crossing has been reported, so
+// a subsequent phase doesn't report it again.
+func (tx *Transaction) MarkAnomalyDenied() { tx.anomalyDenied = true }
+
 // BodyInspected reports whether the body inspect pipeline already ran for the
 // current direction.
 func (tx *Transaction) BodyInspected() bool { return tx.bodyInspected }
+
+// RequestSettled reports whether the request direction already reached its terminal
+// decision (used to ignore a duplicate/late request-headers message).
+func (tx *Transaction) RequestSettled() bool { return tx.requestSettled }
+
+// SetRequestSettled marks the request direction as terminally decided.
+func (tx *Transaction) SetRequestSettled() { tx.requestSettled = true }
 
 // SetBodyInspected marks the body inspect pipeline as having run, so a later
 // terminal message (body EOS, then trailers) does not run it twice.
@@ -278,6 +314,7 @@ func (tx *Transaction) BeginResponse() {
 	tx.bodyInspected = false
 	tx.bodyMutated = false
 	tx.anomalyScore = 0
+	tx.anomalyDenied = false
 	tx.bodyRequired = false
 	tx.wafEnabled = false
 	// Release the request body's budget reservation now that it is no longer
@@ -330,7 +367,9 @@ func (tx *Transaction) Reset() {
 	tx.bodyTruncated = false
 	tx.bodyInspected = false
 	tx.bodyMutated = false
+	tx.requestSettled = false
 	tx.anomalyScore = 0
+	tx.anomalyDenied = false
 	tx.bodyReserved = 0
 	if cap(tx.body) > retainedBodyCap {
 		tx.body = nil

@@ -206,9 +206,15 @@ func (s *Set) inspect(ctx context.Context, req *Request, want func(SecurityEngin
 		if v.Score > 0 {
 			totalScore += v.Score
 		}
-		if v.Action == decision.Block && v.Severity >= worst.Severity {
+		// A Block must ALWAYS win over a non-Block, regardless of severity — a
+		// confirmed block can't be masked by a higher-severity scored/non-block
+		// verdict. Among Blocks (or among non-Blocks), the higher severity wins.
+		switch {
+		case v.Action == decision.Block && worst.Action != decision.Block:
 			worst = v
-		} else if worst.Action != decision.Block && v.Severity > worst.Severity {
+		case v.Action == decision.Block && worst.Action == decision.Block && v.Severity >= worst.Severity:
+			worst = v
+		case v.Action != decision.Block && worst.Action != decision.Block && v.Severity > worst.Severity:
 			worst = v
 		}
 	}

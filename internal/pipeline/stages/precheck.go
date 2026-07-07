@@ -94,6 +94,9 @@ func (ci contextInit) Process(_ context.Context, tx *pipeline.Transaction) pipel
 // token (the old behavior) lets a client spoof its source IP by sending its own
 // X-Forwarded-For header, bypassing every source-IP control.
 func clientIP(tx *pipeline.Transaction, trustedHops int) string {
+	if trustedHops < 0 { // defensive: a negative count would index past the slice
+		trustedHops = 0
+	}
 	if v, ok := tx.Header("x-forwarded-for"); ok && v != "" {
 		toks := strings.Split(v, ",")
 		idx := max(len(toks)-1-trustedHops, 0)
@@ -196,17 +199,10 @@ func (fastPreChecks) Process(_ context.Context, tx *pipeline.Transaction) pipeli
 	}
 	c := p.Checks
 
-	// Host checks.
+	// Host checks. (The :authority vs Host disagreement is a structural integrity
+	// gate handled in EarlyDecision so it runs regardless of mode; here we only do
+	// the policy-opt-in EnforceValidHost.)
 	if !p.SkipsCheck(CheckHost) {
-		// A disagreeing :authority and Host is a host-smuggling signal: the WAF
-		// would resolve policy on one while the backend routes on the other. Reject
-		// it regardless of EnforceValidHost.
-		if auth, ok1 := tx.Header(":authority"); ok1 {
-			if host, ok2 := tx.Header("host"); ok2 &&
-				!strings.EqualFold(matcher.NormalizeHost(auth), matcher.NormalizeHost(host)) {
-				return deny(tx, "header.host_mismatch", "host and :authority disagree", decision.SeverityHigh)
-			}
-		}
 		if c.EnforceValidHost && strings.TrimSpace(tx.Host) == "" {
 			return deny(tx, "header.invalid_host", "missing or empty host", decision.SeverityHigh)
 		}
@@ -259,6 +255,16 @@ func (*earlyDecision) Name() string          { return "early_decision" }
 func (*earlyDecision) Phase() pipeline.Phase { return pipeline.PhasePreCheck }
 
 func (e *earlyDecision) Process(_ context.Context, tx *pipeline.Transaction) pipeline.StageResult {
+	// Host integrity is STRUCTURAL and mode-independent: a request whose :authority
+	// and Host headers disagree is a host-smuggling signal (shield resolves policy on
+	// one, the backend routes on the other). It must be rejected before any mode-based
+	// short-circuit below, so an off/excluded policy cannot bypass it. Not skippable.
+	if auth, ok1 := tx.Header(":authority"); ok1 {
+		if host, ok2 := tx.Header("host"); ok2 &&
+			!strings.EqualFold(matcher.NormalizeHost(auth), matcher.NormalizeHost(host)) {
+			return deny(tx, "header.host_mismatch", "host and :authority disagree", decision.SeverityHigh)
+		}
+	}
 	if tx.Policy == nil {
 		if e.defaultAllow {
 			return pipeline.SkipRemaining()

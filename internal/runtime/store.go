@@ -36,6 +36,17 @@ func (s *Store) Load() *Snapshot {
 	return s.ptr.Load()
 }
 
+// Pin loads the active snapshot AND marks a holder (Acquire). The caller MUST call
+// Release on the returned snapshot when done (e.g. at stream end). This keeps a
+// snapshot's engines alive until every stream that pinned it drains, so the retirer
+// never Close()s engines out from under an in-flight request. The tiny load→acquire
+// window is covered by the retirer's grace before it starts waiting on the refcount.
+func (s *Store) Pin() *Snapshot {
+	snap := s.ptr.Load()
+	snap.Acquire()
+	return snap
+}
+
 // Set atomically installs snap as the active Snapshot. It is a no-op for a nil
 // snapshot to preserve the invariant that an active snapshot always exists.
 func (s *Store) Set(snap *Snapshot) {

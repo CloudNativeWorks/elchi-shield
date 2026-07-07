@@ -243,3 +243,19 @@ func TestMetadata(t *testing.T) {
 		t.Errorf("close: %v", err)
 	}
 }
+
+func TestParserTokenLimitStopsDeepNesting(t *testing.T) {
+	// A ~900K-bracket query previously drove the recursive-descent parser off the
+	// goroutine stack — a FATAL, unrecoverable crash that killed the whole process.
+	// The token-bounded parser must reject it as an ordinary parse error instead.
+	e, _ := New(Config{MaxDepth: 5})
+	q := "query{a(x:" + strings.Repeat("[", 900000)
+	v := inspect(t, e, post(jsonQ(q)))
+	if v.RuleID != "graphql.parse_error" {
+		t.Fatalf("deep-nesting query must be a bounded parse error, got %+v", v)
+	}
+	// A normal query is unaffected.
+	if v := inspect(t, e, post(jsonQ("{ a b c }"))); v.Action == decision.Block {
+		t.Fatalf("normal query must pass, got %+v", v)
+	}
+}

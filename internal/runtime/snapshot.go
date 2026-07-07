@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudnativeworks/elchi-shield/internal/config"
@@ -22,6 +23,10 @@ type Snapshot struct {
 	sources  []string
 	cfg      *config.MergedConfig
 	resolver *policy.Resolver
+	// refs counts streams that have pinned this snapshot (Acquire) and not yet
+	// released it. The retirer waits for this to hit zero before Close() frees the
+	// engines, so a stream still holding the snapshot never sees a use-after-close.
+	refs atomic.Int64
 }
 
 // NewSnapshot compiles a validated MergedConfig into an immutable Snapshot:
@@ -100,4 +105,26 @@ func (s *Snapshot) Close() error {
 		return nil
 	}
 	return s.resolver.Close()
+}
+
+// Acquire marks one in-flight holder (a stream that pinned this snapshot). Nil-safe.
+func (s *Snapshot) Acquire() {
+	if s != nil {
+		s.refs.Add(1)
+	}
+}
+
+// Release drops one holder. Nil-safe.
+func (s *Snapshot) Release() {
+	if s != nil {
+		s.refs.Add(-1)
+	}
+}
+
+// Refs reports how many streams currently hold this snapshot pinned.
+func (s *Snapshot) Refs() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.refs.Load()
 }

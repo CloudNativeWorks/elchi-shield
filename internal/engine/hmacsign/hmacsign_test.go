@@ -131,6 +131,34 @@ func TestReplayNonce(t *testing.T) {
 	}
 }
 
+func TestReplayCacheCoversFullTimestampWindow(t *testing.T) {
+	// A signature timestamped at the max future skew (+window) is accepted until
+	// ts+window — up to 2×window from receipt. The replay cache must remember it that
+	// whole span; with the old default (TTL=window) it was forgotten while the
+	// timestamp was still valid, so the request replayed. Uses a mutable clock shared
+	// by the timestamp check and the replay cache.
+	window := time.Minute
+	clock := time.Unix(fixedNow, 0)
+	e, err := New(Config{Secret: "s", Window: window, now: func() time.Time { return clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := strconv.Itoa(fixedNow + 60) // signed +window into the future (max skew)
+	sig := sign("s", "GET", "/hmac", ts, "", "")
+	mk := func() *engine.Request {
+		return &engine.Request{Method: "GET", Path: "/hmac", Headers: hdrs{"X-Signature": sig, "X-Timestamp": ts}}
+	}
+	if v := inspect(t, e, mk()); v.Action == decision.Block {
+		t.Fatalf("first use should pass, got %+v", v)
+	}
+	// Advance past the OLD (window) TTL, but the timestamp is still valid (5s old,
+	// window 60s). The replay must still be caught.
+	clock = time.Unix(fixedNow+65, 0)
+	if v := inspect(t, e, mk()); v.RuleID != "sig.replayed" {
+		t.Fatalf("replay while the timestamp is still valid must be blocked, got %+v", v)
+	}
+}
+
 func TestRequireNonceMissing(t *testing.T) {
 	e := newEngine(t, Config{Secret: "s", RequireNonce: true})
 	ts := strconv.Itoa(fixedNow)

@@ -96,6 +96,13 @@ func NewProcessor(cfg Config) *Processor {
 	}
 }
 
+// maxStreamIdle bounds how long an ext_proc stream may sit with no message before
+// it is torn down as stuck/half-open, releasing its pinned Transaction, snapshot
+// refcount, and body budget. A generous backstop: Envoy's own stream_idle_timeout is
+// the primary bound, and this stays well above any legitimate inter-message gap
+// (e.g. Envoy buffering a slow body upload) while sitting below MaxConnectionAge.
+const maxStreamIdle = 15 * time.Minute
+
 // Process is the bidirectional ext_proc stream handler. It recovers any panic
 // (in our code or a third-party engine like Coraza/JWT) so a single bad stream
 // can never crash the process or take down the other listeners.
@@ -125,34 +132,108 @@ func (pr *Processor) Process(stream extprocv3.ExternalProcessor_ProcessServer) (
 	// Release this stream's body-budget reservation before the Transaction is
 	// reset (defers run LIFO, so this runs before pool.Release).
 	defer func() { pr.budget.Release(tx.BodyReserved()) }()
-	tx.SetBudget(pr.budget)       // lets the decode stage charge decoded bytes
-	tx.Snapshot = pr.store.Load() // pin for the whole stream
+	tx.SetBudget(pr.budget) // lets the decode stage charge decoded bytes
+	// Pin (refcounted) for the whole stream so a mid-stream reload can't Close the
+	// snapshot's engines while this stream still uses them. Held in a local so the
+	// deferred Release is unaffected by tx.Reset() zeroing tx.Snapshot.
+	snap := pr.store.Pin()
+	defer snap.Release()
+	tx.Snapshot = snap
 	// RequestID is minted lazily: Envoy almost always supplies x-request-id (adopted
 	// in onRequestHeaders), so the random fallback — a crypto/rand read + hex alloc —
 	// is only paid when that header is absent.
 	tx.ListenerID = pr.listenerID
 
-	for {
-		req, err := stream.Recv()
-		if err != nil {
-			// io.EOF is a clean half-close. A Canceled stream (context or gRPC code)
-			// is ALSO a normal teardown: Envoy cancels the per-request ext_proc stream
-			// once the request finishes (or the downstream connection closes). These
-			// are not transport faults — counting them inflated extproc_errors_total on
-			// every request and read like an outage. Only genuine errors are recorded.
-			if errors.Is(err, io.EOF) || isStreamEnded(err) {
-				return nil
+	// Per-stream idle deadline. A half-open stream (opened then silent, or a peer that
+	// stalls mid-upload) otherwise pins a pooled Transaction, the snapshot refcount, and
+	// any buffered body-budget bytes until Envoy's own stream/connection timeout — and
+	// under a misconfigured Envoy, up to MaxConnectionAge. Recv runs in a reader
+	// goroutine so the loop can bound the idle wait. The goroutine is per-stream and
+	// ends with it: when Process returns, ctx (the stream context) is cancelled, so the
+	// reader's ctx.Done() branch exits — no leak. Recv (reader) and Send (loop) run in
+	// separate goroutines, which gRPC permits for opposite stream directions. Envoy's
+	// stream_idle_timeout remains the primary bound; this is a backstop.
+	type recvResult struct {
+		req      *extprocv3.ProcessingRequest
+		err      error
+		panicked bool
+	}
+	recvCh := make(chan recvResult, 1)
+	go func() {
+		// Recv now runs off the main goroutine, so Process's stream-boundary recover no
+		// longer covers a panic from the framer/transport. Recover here too — mirror the
+		// same metric+log and hand the main loop a codes.Internal error — so a Recv panic
+		// still can't crash the process (one stream dies, others survive).
+		defer func() {
+			if rec := recover(); rec != nil {
+				pr.metrics.RecordExtprocError("panic")
+				if pr.log != nil {
+					pr.log.Error("panic recovered in ext_proc recv",
+						logging.KeyListener, pr.listenerID, "panic", rec, "stack", string(debug.Stack()))
+				}
+				select {
+				case recvCh <- recvResult{err: status.Errorf(codes.Internal, "internal error"), panicked: true}:
+				case <-ctx.Done():
+				}
 			}
-			pr.metrics.RecordExtprocError("transport")
-			return err
+		}()
+		for {
+			req, rerr := stream.Recv()
+			select {
+			case recvCh <- recvResult{req: req, err: rerr}:
+			case <-ctx.Done():
+				return
+			}
+			if rerr != nil {
+				return
+			}
 		}
+	}()
 
-		resp := pr.handle(ctx, tx, req)
-		if resp == nil {
-			continue
-		}
-		if err := stream.Send(resp); err != nil {
-			return err
+	idle := time.NewTimer(maxStreamIdle)
+	defer idle.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-idle.C:
+			// No message for maxStreamIdle — a stuck/half-open stream. Fail closed: this
+			// stream dies (others are unaffected) and its pinned resources are released.
+			pr.metrics.RecordExtprocError("idle_timeout")
+			return status.Error(codes.DeadlineExceeded, "ext_proc stream idle timeout")
+
+		case r := <-recvCh:
+			if r.err != nil {
+				if r.panicked {
+					return r.err // panic already recorded + logged by the reader goroutine
+				}
+				// io.EOF is a clean half-close. A Canceled stream (context or gRPC code)
+				// is ALSO a normal teardown: Envoy cancels the per-request ext_proc stream
+				// once the request finishes (or the downstream connection closes). These
+				// are not transport faults — counting them inflated extproc_errors_total on
+				// every request and read like an outage. Only genuine errors are recorded.
+				if errors.Is(r.err, io.EOF) || isStreamEnded(r.err) {
+					return nil
+				}
+				pr.metrics.RecordExtprocError("transport")
+				return r.err
+			}
+			if !idle.Stop() {
+				select {
+				case <-idle.C:
+				default:
+				}
+			}
+			idle.Reset(maxStreamIdle)
+
+			resp := pr.handle(ctx, tx, r.req)
+			if resp == nil {
+				continue
+			}
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -251,6 +332,12 @@ func (pr *Processor) handle(ctx context.Context, tx *pipeline.Transaction, req *
 
 func (pr *Processor) onRequestHeaders(ctx context.Context, tx *pipeline.Transaction, h *extprocv3.HttpHeaders) *extprocv3.ProcessingResponse {
 	start := time.Now()
+	if tx.RequestSettled() {
+		// A duplicate/late request-headers after the request was already decided is a
+		// protocol violation (a conforming Envoy sends one per request). Ignore it
+		// rather than re-resolve the policy and double-count requests_total.
+		return requestHeadersContinue(nil)
+	}
 	tx.Direction = pipeline.DirectionRequest
 	loadHeaders(tx, h.GetHeaders())
 
@@ -372,6 +459,21 @@ func (pr *Processor) appendBody(tx *pipeline.Transaction, dir pipeline.Direction
 
 func (pr *Processor) onRequestBody(ctx context.Context, tx *pipeline.Transaction, b *extprocv3.HttpBody) *extprocv3.ProcessingResponse {
 	start := time.Now()
+	if tx.Policy == nil {
+		// A body message with no resolved policy is only reachable from a non-conforming
+		// peer (a conforming Envoy gets no BUFFERED-body request for an unmatched/mode-off
+		// route). Don't buffer or charge the shared body budget for bytes we will never
+		// inspect — otherwise many such streams could exhaust the budget for real bodies.
+		return requestBodyContinue()
+	}
+	// A non-empty body chunk arriving AFTER the buffered body was already inspected
+	// (e.g. a spurious body following a headers message that carried end_of_stream)
+	// would otherwise be forwarded uninspected — inspectBufferedBody's once-latch
+	// no-ops. Re-open inspection so the late bytes ARE inspected. Only a protocol-
+	// violating peer sends a body after headers-EOS; a conforming Envoy never does.
+	if len(b.GetBody()) > 0 && tx.BodyInspected() {
+		tx.SetBodyInspected(false)
+	}
 	pr.appendBody(tx, pipeline.DirectionRequest, b.GetBody())
 	// Inspect only at the terminal chunk. When trailers terminate the stream the
 	// final body chunk carries end_of_stream=false and onRequestTrailers runs the
@@ -442,6 +544,12 @@ func (pr *Processor) onResponseHeaders(ctx context.Context, tx *pipeline.Transac
 
 func (pr *Processor) onResponseBody(ctx context.Context, tx *pipeline.Transaction, b *extprocv3.HttpBody) *extprocv3.ProcessingResponse {
 	start := time.Now()
+	if tx.Policy == nil {
+		return responseBodyContinue() // no policy → nothing to inspect; don't buffer/charge
+	}
+	if len(b.GetBody()) > 0 && tx.BodyInspected() {
+		tx.SetBodyInspected(false) // re-open inspection for a body chunk after headers-EOS
+	}
 	pr.appendBody(tx, pipeline.DirectionResponse, b.GetBody())
 	// See onRequestBody: defer to trailers on a non-terminal chunk, unless the
 	// policy redacts the body (DLP) — that mutation must be applied at this body
@@ -575,6 +683,9 @@ func continueFor(dir pipeline.Direction, phase string) *extprocv3.ProcessingResp
 // finish records the terminal decision for a phase: structured log, metrics, and
 // a (sampled, redacted-by-construction) audit event.
 func (pr *Processor) finish(ctx context.Context, tx *pipeline.Transaction, d *decision.Decision, phase string, start time.Time) {
+	if strings.HasPrefix(phase, "request") {
+		tx.SetRequestSettled() // the request direction has reached its terminal decision
+	}
 	latency := time.Since(start)
 	pr.logDecision(ctx, tx, d, phase, latency)
 	pr.lmFor(tx).RecordDecision(d, phase, latency)
@@ -899,16 +1010,22 @@ func requestBodyContinue() *extprocv3.ProcessingResponse { return respRequestBod
 func responseBodyContinue() *extprocv3.ProcessingResponse { return respResponseBodyContinue }
 
 // bodyMutationCommon builds the CommonResponse that replaces the data-plane body
-// with the (redacted) bytes. Because the buffered body the inspectors saw is the
-// DECODED payload, the mutation strips Content-Encoding so the client receives a
-// correct identity-encoded response; Envoy recomputes Content-Length from the
-// mutated body, so we do not set it ourselves (a manual Content-Length conflicts
-// with Envoy's own length management and drops the body).
+// with the (redacted) bytes. Two headers MUST be stripped:
+//   - Content-Encoding: the buffered body the inspectors saw is the DECODED
+//     payload, so the mutated body is identity-encoded.
+//   - Content-Length: a redaction that changes the body length (e.g. masking an
+//     email or SSN to a different width) leaves the ORIGINAL Content-Length stale.
+//     Envoy validates the declared Content-Length against the mutated body and
+//     fails the request/response with a 500 ("mismatch between content length and
+//     the length of the mutated body") on any mismatch — it does NOT recompute
+//     while the header is present. Removing it lets Envoy set the correct length
+//     from the mutated body. (Same-length masks — e.g. a credit card keeping the
+//     last four — happen to match and hid this for the response path.)
 func bodyMutationCommon(body []byte) *extprocv3.CommonResponse {
 	return &extprocv3.CommonResponse{
 		Status:         extprocv3.CommonResponse_CONTINUE,
 		BodyMutation:   &extprocv3.BodyMutation{Mutation: &extprocv3.BodyMutation_Body{Body: body}},
-		HeaderMutation: &extprocv3.HeaderMutation{RemoveHeaders: []string{"content-encoding"}},
+		HeaderMutation: &extprocv3.HeaderMutation{RemoveHeaders: []string{"content-encoding", "content-length"}},
 	}
 }
 

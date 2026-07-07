@@ -71,9 +71,17 @@ func buildInfo() (ver, revision, goVersion, buildTime string) {
 	return ver, revision, goVersion, buildTime
 }
 
-// snapshotRetireGrace is how long a replaced snapshot is kept before its engines
-// are closed, allowing in-flight requests that pinned it to finish.
+// snapshotRetireGrace is the fixed wait before the retirer starts checking a
+// replaced snapshot's refcount — it covers the tiny store.Pin() load→acquire window.
 const snapshotRetireGrace = 30 * time.Second
+
+// After the grace, the retirer polls the snapshot's refcount this often, waiting for
+// all pinned streams to drain, up to snapshotRetireMaxWait (a cap so a stuck stream
+// can't hold a retired snapshot's engines forever).
+const (
+	snapshotRetirePoll    = 200 * time.Millisecond
+	snapshotRetireMaxWait = 10 * time.Minute
+)
 
 // retireItem is a snapshot queued for delayed close, with its enqueue time.
 type retireItem struct {
@@ -214,6 +222,9 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	if !cfg.allowNonLoopback && !isLoopbackTCP(cfg.httpAddr) {
 		return fmt.Errorf("--http-addr %q is not loopback; the health/metrics server must not be exposed externally (use 127.0.0.1, or --allow-non-loopback to override)", cfg.httpAddr)
 	}
+	if cfg.trustedHops < 0 {
+		return fmt.Errorf("--xff-trusted-hops must be >= 0, got %d", cfg.trustedHops)
+	}
 
 	bVer, bRev, bGo, bTime := buildInfo()
 	logger.Info("starting elchi-shield",
@@ -329,33 +340,37 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	// queue + one worker — instead of a goroutine per reload — keeps goroutines
 	// and held snapshots bounded even under hostile config flapping.
 	retireCh := make(chan retireItem, 64)
+	// closeRetired frees a replaced snapshot's engines, but only after (1) a fixed
+	// grace covering the tiny store.Pin() load→acquire window, and (2) the snapshot's
+	// refcount draining to zero — i.e. every stream that pinned it has finished — so
+	// Close never frees engines (Coraza rulesets, JWKS refreshers) out from under an
+	// in-flight request. The refcount wait is capped so a stuck stream can't hold the
+	// snapshot forever.
+	closeRetired := func(snap *runtime.Snapshot, retiredAt time.Time) {
+		if d := time.Until(retiredAt.Add(snapshotRetireGrace)); d > 0 {
+			time.Sleep(d)
+		}
+		deadline := time.Now().Add(snapshotRetireMaxWait)
+		for snap.Refs() > 0 && time.Now().Before(deadline) {
+			time.Sleep(snapshotRetirePoll)
+		}
+		if err := snap.Close(); err != nil {
+			runtimeLog.Warn("retired snapshot close failed", logging.Err(err))
+		}
+	}
 	go func() {
 		for it := range retireCh {
-			if d := time.Until(it.at.Add(snapshotRetireGrace)); d > 0 {
-				time.Sleep(d)
-			}
-			if err := it.snap.Close(); err != nil {
-				runtimeLog.Warn("retired snapshot close failed", logging.Err(err))
-			}
+			closeRetired(it.snap, it.at)
 		}
 	}()
 	reloader.OnRetire(func(old *runtime.Snapshot) {
 		select {
 		case retireCh <- retireItem{snap: old, at: time.Now()}:
 		default:
-			// Queue full (rapid flapping). Closing now is unsafe: a slow in-flight
-			// request may still have this snapshot pinned (tx.Snapshot), and Close
-			// frees its engines (Coraza rulesets, JWKS refreshers) → a use-after-free
-			// race in a third-party engine. Honor the grace in a one-off goroutine
-			// instead. Overflow is rare (more than the queue depth of reloads within
-			// the grace window), and config comes from the trusted management plane,
-			// so correctness here outweighs the strict no-extra-goroutine bound.
-			go func(s *runtime.Snapshot) {
-				time.Sleep(snapshotRetireGrace)
-				if err := s.Close(); err != nil {
-					runtimeLog.Warn("retired snapshot close failed", logging.Err(err))
-				}
-			}(old)
+			// Queue full (rapid flapping): honor the same grace+drain in a one-off
+			// goroutine. Overflow is rare and config comes from the trusted management
+			// plane, so correctness outweighs the strict no-extra-goroutine bound.
+			go closeRetired(old, time.Now())
 		}
 	})
 	doReload(reloader, configLog, m, reloadStatus)

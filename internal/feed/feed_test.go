@@ -88,3 +88,19 @@ func TestKnownFormat(t *testing.T) {
 		t.Error("nope should be unknown")
 	}
 }
+
+func TestLoadNormalizesIPv4MappedIPv6(t *testing.T) {
+	// A feed written in IPv4-mapped-IPv6 notation must normalize to native IPv4, or it
+	// never matches the unmapped client IP the reputation engine looks up.
+	p := write(t, "f.txt", "::ffff:192.0.2.0/120\n::ffff:198.51.100.7\n")
+	got, err := Load(p, FormatCIDRLines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].String() != "192.0.2.0/24" {
+		t.Errorf("mapped CIDR should normalize to native IPv4 /24, got %s", got[0])
+	}
+	if got[1].String() != "198.51.100.7/32" {
+		t.Errorf("mapped bare IP should normalize to native IPv4 /32, got %s", got[1])
+	}
+}

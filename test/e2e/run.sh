@@ -50,6 +50,8 @@ printf '# e2e threat feed\n198.51.100.0/24\n2001:db8:bad::/48\n' > "$CFG/threat-
 cp "$ROOT/internal/geoip/testdata/GeoLite2-Country-Test.mmdb" "$CFG/geo-country.mmdb"
 # Verified-bot IP feed for the bot engine (a Googlebot range).
 printf '# googlebot ranges\n66.249.64.0/19\n' > "$CFG/googlebot.txt"
+# FireHOL-format netset feed for the ip_reputation firehol_netset case.
+printf '# firehol netset (comments + CIDR lines)\n192.0.2.0/24\n' > "$CFG/feed-firehol.netset"
 # OpenAPI spec for the openapi engine (.oas extension so the config watcher
 # doesn't try to parse it as a SecurityPolicy).
 cat > "$CFG/api-spec.oas" <<'OAS'
@@ -153,7 +155,10 @@ req POST /pii "$AH" --data 'key=AKIAIOSFODNN7EXAMPLE rest';                    e
 req POST /pii "$AH" --data 'token ghp_0123456789abcdef0123456789abcdef0123';  expect "PII: GitHub token → 403" "$CODE" 403
 req POST /pii "$AH" --data "tok $VALID end";                                   expect "PII: JWT in body → 403" "$CODE" 403
 req POST /pii "$AH" --data '-----BEGIN PRIVATE KEY----- MIIE...';             expect "PII: private key block → 403" "$CODE" 403
+req POST /pii "$AH" --data '-----BEGIN ENCRYPTED PRIVATE KEY----- MIIF...';   expect "PII: encrypted (PKCS#8) private key → 403" "$CODE" 403
+req POST /pii "$AH" --data 'tok github_pat_11ABCDE0aZ_0123456789abcdefghij0123456789 x'; expect "PII: GitHub fine-grained PAT → 403" "$CODE" 403
 req POST /pii "$AH" --data '4111 1111 1111 1112 invalid';                     expect "PII: non-Luhn number → allowed (200)" "$CODE" 200
+req POST /pii "$AH" --data 'ref 0000000000000000 here';                       expect "PII: all-zeros (Luhn but not a card IIN) → allowed (200)" "$CODE" 200
 req POST /pii "$AH" --data 'nothing sensitive here';                          expect "PII: clean body → 200" "$CODE" 200
 
 # ---- Content-Encoding decode (gzip/deflate/brotli/stacked) ----
@@ -194,6 +199,10 @@ expect "per-header rate limit (k1) → 429 seen" "$gh" 1
 req GET /rl-hdr "$AH" -H 'X-Api-Key: brand-new-key';    expect "different key → independent bucket (200)" "$CODE" 200
 hh=0; for _ in $(seq 1 3); do req GET /rl-host "$AH"; [ "$CODE" = 429 ] && hh=1; done
 expect "per-host rate limit → 429 seen" "$hh" 1
+# Omitting the keyed header must NOT bypass the limit: unkeyed requests share one
+# bucket (burst 1 → a 429 appears), rather than being exempt.
+nk=0; for _ in $(seq 1 4); do req GET /rl-hdr "$AH"; [ "$CODE" = 429 ] && nk=1; done
+expect "missing keyed header → shared unkeyed bucket → 429 (no bypass)" "$nk" 1
 # Token-bucket refill: after the rps window the bucket recovers and allows again.
 sleep 1.2; req GET /rl-host "$AH";                      expect "rate limit refills after window → 200" "$CODE" 200
 
@@ -296,8 +305,24 @@ case "$DB" in
   *'*'*)                   P "DLP: credit card masked in response body (last4 kept)";;
   *)                       F "DLP: unexpected response body: $DB";;
 esac
+# Email redaction CHANGES the body length → Content-Length must be recomputed
+# (a stale CL made Envoy 500 before the fix). Regression guard for both directions.
+req GET '/dlp?resp=email' "$AH"; expect "email response redacted (length change) → 200" "$CODE" 200
+case "$(cat /tmp/eb)" in
+  *'user@example.com'*) F "DLP: email NOT redacted in response body";;
+  *)                    P "DLP: email redacted in response (length changed, CL recomputed)";;
+esac
 req GET '/dlp?resp=privkey' "$AH"; expect "private key in response → blocked (403)" "$CODE" 403
 req GET '/dlp?resp=json' "$AH";    expect "clean response → 200" "$CODE" 200
+# detect mode is OBSERVE-ONLY: DLP records the would-redaction but must NOT rewrite
+# the body (a dry-run must never mutate live traffic).
+det0=$(msum '^elchi_shield_detections_total'); req GET '/dlp-detect?resp=email' "$AH"; det1=$(msum '^elchi_shield_detections_total')
+expect "DLP detect mode → allowed (200)" "$CODE" 200
+case "$(cat /tmp/eb)" in
+  *'user@example.com'*) P "DLP detect: body NOT rewritten (observe-only)";;
+  *)                    F "DLP detect: body was redacted in detect mode (must be observe-only)";;
+esac
+if [ "$det1" -gt "$det0" ]; then P "DLP detect: would-redaction recorded (detections_total)"; else F "DLP detect: would-redaction not recorded"; fi
 
 # ==================== PHASE 5g: Engine — OpenAPI positive validation ====================
 phase "Engine: OpenAPI validation"
@@ -320,6 +345,8 @@ req POST /waf "$AH" -H 'Content-Type: text/plain' --data 'q=hello world';       
 req POST /waf-detect "$AH" -H 'Content-Type: text/plain' --data 'q=1 union select x';             expect "WAF DetectionOnly: SQLi recorded but allowed (200)" "$CODE" 200
 req GET '/waf-resp?resp=coraza' "$AH";   expect "WAF on response body (phase:4) → 403" "$CODE" 403
 req GET '/waf-resp?resp=json' "$AH";     expect "WAF clean response → 200" "$CODE" 200
+# A Coraza-forced status outside Envoy's StatusCode enum (418) must still be delivered.
+req GET '/waf-418' "$AH";                expect "Coraza-forced non-enum status (418) delivered → 418" "$CODE" 418
 
 # ==================== PHASE 7: Decision modes (record but allow) ====================
 phase "Decision modes (detect/shadow)"
@@ -385,6 +412,87 @@ YAML
 for _ in $(seq 1 20); do v2=$(curl -s "http://${HTTP}/configz" | grep '"version"' | head -1); [ "$v2" != "$v1" ] && break; sleep 0.25; done
 req GET /x "$(H reload.local)" -H 'X-Debug: 1';  expect "after reload: new domain blocks X-Debug (403)" "$CODE" 403
 [ "$v2" != "$v1" ] && P "config version changed on reload" || F "config version did not change"
+
+# ==================== PHASE 12: Advanced field coverage ====================
+
+# ---- Coraza with the EMBEDDED OWASP CRS (not custom directives) ----
+phase "Coraza embedded OWASP CRS"
+# Clean request with a plain-text upstream response: exercises the OUTBOUND CRS
+# path. Before the phase-1-init fix this false-positived on 959100 (unset outbound
+# threshold); now it evaluates against the real threshold and passes.
+req GET /waf-crs "$AH" -A "$BROWSER" -H 'Accept: text/html' -H 'Accept-Language: en-US'; expect "CRS clean request (outbound OK) → 200" "$CODE" 200
+req GET /waf-crs "$AH" -A "$BROWSER" -H 'Accept: text/html' -G --data-urlencode 'q=1 UNION SELECT password FROM users'; expect "CRS SQLi (union select) → 403" "$CODE" 403
+req GET /waf-crs "$AH" -A "$BROWSER" -H 'Accept: text/html' -G --data-urlencode 'c=<script>alert(1)</script>';        expect "CRS XSS (<script>) → 403" "$CODE" 403
+req GET /waf-crs "$AH" -A "$BROWSER" -H 'Accept: text/html' -G --data-urlencode 'f=../../../etc/passwd';             expect "CRS path traversal → 403" "$CODE" 403
+
+# ---- API key from the query string (custom name, sha256-at-rest) ----
+phase "Engine: API-key (query source, sha256)"
+req GET '/apikey-q?api_key=qkey-secret-1' "$AH"; expect "valid query API key (sha256 match) → 200" "$CODE" 200
+req GET '/apikey-q?api_key=wrong'         "$AH"; expect "wrong query API key → 403" "$CODE" 403
+req GET '/apikey-q'                       "$AH"; expect "missing query API key → 403" "$CODE" 403
+
+# ---- DLP on the REQUEST body (direction: request) ----
+# The redaction here CHANGES the body length (email mask) — regression-tests the
+# Content-Length recompute on a request-body mutation (a stale CL made Envoy 500).
+phase "DLP: request direction"
+req POST /dlp-req "$AH" --data 'contact a@b.com card 4111 1111 1111 1111';        expect "PII in request → redacted (length change), allowed (200)" "$CODE" 200
+req POST /dlp-req "$AH" --data '-----BEGIN PRIVATE KEY----- MIIE...';             expect "secret in request → blocked (403)" "$CODE" 403
+req POST /dlp-req "$AH" --data 'nothing sensitive';                              expect "clean request → 200" "$CODE" 200
+
+# ---- Bot: require_accept / require_accept_encoding heuristics, JA3 deny, JA4 score ----
+phase "Engine: Bot (JA3 / accept heuristics / JA4 score)"
+req GET /bot2 "$AH" -A "$BROWSER" -H 'Accept: */*' -H 'Accept-Encoding: gzip';                          expect "clean (both accept headers) → 200" "$CODE" 200
+req GET /bot2 "$AH" -A "$BROWSER" -H 'Accept:';                                                          expect "missing Accept + Accept-Encoding (score 60) → 403" "$CODE" 403
+req GET /bot2 "$AH" -A "$BROWSER" -H 'Accept: */*' -H 'Accept-Encoding: gzip' -H 'x-shield-ja3: ja3-known-bad'; expect "denied JA3 fingerprint → 403" "$CODE" 403
+req GET /bot2 "$AH" -A "$BROWSER" -H 'Accept: */*' -H 'Accept-Encoding: gzip' -H 'x-shield-ja4: t13d-suspect-ja4'; expect "scored JA4 (60 ≥ 50) → 403" "$CODE" 403
+
+# ---- HMAC: sha512 + key-id rotation (secrets map) + required body digest ----
+phase "Engine: HMAC (sha512, key rotation, body digest)"
+HS2=new-secret-key-2025xx; B2='{"amount":10}'
+DIG2=$(printf '%s' "$B2" | openssl dgst -sha256 | awk '{print $NF}')
+TS2=$(date +%s)
+sig512(){ printf 'POST\n/hmac2\n%s\n%s\n%s' "$1" "$2" "$3" | openssl dgst -sha512 -hmac "$HS2" | awk '{print $NF}'; }
+SIG2=$(sig512 "$TS2" '' "$DIG2")
+req POST /hmac2 "$AH" -H "X-Signature: $SIG2" -H "X-Timestamp: $TS2" -H 'X-Key-Id: 2025' -H 'Content-Type: application/json' --data "$B2"; expect "sha512 + key-id 2025 + body digest → 200" "$CODE" 200
+req POST /hmac2 "$AH" -H "X-Signature: $SIG2" -H "X-Timestamp: $TS2" -H 'X-Key-Id: 2024' -H 'Content-Type: application/json' --data "$B2"; expect "wrong key-id (2024 secret) → 403" "$CODE" 403
+req POST /hmac2 "$AH" -H "X-Signature: $SIG2" -H "X-Timestamp: $TS2" -H 'X-Key-Id: 2025' -H 'Content-Type: application/json' --data '{"amount":99999}'; expect "tampered body (digest mismatch) → 403" "$CODE" 403
+
+# ---- GraphQL: whole-document field budget + fragment-depth + content-type scoping ----
+phase "Engine: GraphQL (total fields, fragment depth, content-type)"
+req POST /graphql2 "$AH" -H "$GQ" --data '{"query":"{ a b c }"}';                          expect "total fields ≤ 5 → 200" "$CODE" 200
+req POST /graphql2 "$AH" -H "$GQ" --data '{"query":"{ a b c d e f g }"}';                   expect "total fields > 5 → 403" "$CODE" 403
+req POST /graphql2 "$AH" -H 'Content-Type: text/plain' --data 'not graphql';               expect "content-type not in list → passthrough (200)" "$CODE" 200
+
+# ---- JWT: custom header name + clock-skew leeway ----
+phase "Engine: JWT (custom header, leeway)"
+JLW_OK=$("$DIR/gentoken.bin" -secret e2e-secret -aud api -sub u1 -exp -30)    # expired 30s ago (within 120s leeway)
+JLW_BAD=$("$DIR/gentoken.bin" -secret e2e-secret -aud api -sub u1 -exp -300)  # expired 300s ago (beyond leeway)
+req GET /jwt-lw "$AH" -H "X-Access-Token: Bearer $JLW_OK";  expect "expired-within-leeway via custom header → 200" "$CODE" 200
+req GET /jwt-lw "$AH" -H "X-Access-Token: Bearer $JLW_BAD"; expect "expired beyond leeway → 403" "$CODE" 403
+req GET /jwt-lw "$AH" -H "Authorization: Bearer $VALID";    expect "token in wrong header (Authorization) → 403" "$CODE" 403
+req GET /jwt-lw "$AH";                                       expect "custom header missing → 403" "$CODE" 403
+
+# ---- IP reputation: allow_countries (default-deny), firehol_netset, IPv6 feed ----
+phase "Engine: IP reputation (allow-countries, firehol, IPv6)"
+req GET /ip-geo-allow "$AH" -H 'X-Forwarded-For: 89.160.20.128'; expect "allow_countries SE → allowed (200)" "$CODE" 200
+req GET /ip-geo-allow "$AH" -H 'X-Forwarded-For: 81.2.69.142';   expect "allow_countries default-deny GB → 403" "$CODE" 403
+req GET /ip-geo-allow "$AH" -H 'X-Forwarded-For: 192.0.2.1';     expect "allow_countries default-deny DB-missing IP → 403" "$CODE" 403
+req GET /ip-feed-fh   "$AH" -H 'X-Forwarded-For: 192.0.2.50';    expect "firehol_netset feed hit → 403" "$CODE" 403
+req GET /ip-feed-fh   "$AH" -H 'X-Forwarded-For: 8.8.8.8';       expect "firehol_netset feed miss → 200" "$CODE" 200
+req GET /ip-feed      "$AH" -H 'X-Forwarded-For: 2001:db8:bad::1'; expect "threat-feed IPv6 CIDR hit → 403" "$CODE" 403
+
+# ---- Match predicates: path_regex + header match ----
+phase "Match: path_regex & header match"
+req GET /re/123 "$AH" -H 'X-Debug: 1'; expect "path_regex digit match → block (403)" "$CODE" 403
+req GET /re/abc "$AH" -H 'X-Debug: 1'; expect "path_regex non-match → default off (200)" "$CODE" 200
+req GET /hm "$AH" -H 'X-Env: prod' -H 'X-Debug: 1'; expect "header match (X-Env=prod) → route applies (403)" "$CODE" 403
+req GET /hm "$AH" -H 'X-Debug: 1';                  expect "header match miss → default off (200)" "$CODE" 200
+
+# ---- XFCC by subject DN and by cert fingerprint (hash) ----
+phase "Engine: XFCC (subject DN, fingerprint hash)"
+req GET /xfcc2 "$AH" -H 'x-test-client-cert: Subject="CN=web,OU=team";URI=spiffe://x'; expect "XFCC subject DN allow-listed → 200" "$CODE" 200
+req GET /xfcc2 "$AH" -H 'x-test-client-cert: Hash=abc123def456;Subject="CN=other"';    expect "XFCC fingerprint hash allow-listed → 200" "$CODE" 200
+req GET /xfcc2 "$AH" -H 'x-test-client-cert: Subject="CN=nobody"';                     expect "XFCC subject/hash not allow-listed → 403" "$CODE" 403
 
 echo
 echo "--- counters ---"

@@ -240,6 +240,28 @@ func TestProcessorBufferedBodyInspectionBlocksInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestBodyInspectionNotBypassedByEOSHeadersThenBody(t *testing.T) {
+	// A protocol-violating peer sends request headers with end_of_stream=true — which
+	// inspects an EMPTY body (benign, so it latches "inspected") — then a body message
+	// carrying an attack. The late body must STILL be inspected, not forwarded as
+	// clean. (Before the re-open fix, the latch made inspectBufferedBody a no-op and
+	// the invalid JSON bypassed the WAF/require_json check.)
+	pr := buildProcessor(t)
+	out := run(t, pr,
+		reqHeadersEOS(":authority", "api.example.com", ":path", "/json", ":method", "POST", "content-type", "application/json"),
+		reqBody("{ not valid json", true),
+	)
+	blocked := false
+	for _, r := range out {
+		if isImmediate(r) {
+			blocked = true
+		}
+	}
+	if !blocked {
+		t.Fatal("invalid-JSON body after a headers end_of_stream bypassed inspection (must block)")
+	}
+}
+
 func TestProcessorBufferedBodyInspectionAllowsValidJSON(t *testing.T) {
 	pr := buildProcessor(t)
 	out := run(t, pr,

@@ -50,4 +50,26 @@ func TestLuhn(t *testing.T) {
 	if luhnValid([]byte("411111")) {
 		t.Error("too-short number should fail (not a card length)")
 	}
+	// IIN guard: cards start with 2–6, so Luhn-passing IDs with a 0/1 lead are not cards.
+	if luhnValid([]byte("0000000000000000")) {
+		t.Error("all-zeros (Luhn-valid but IIN 0) must not be treated as a card")
+	}
+	if luhnValid([]byte("1234567890123452")) {
+		t.Error("Luhn-valid sequential ID (IIN 1) must not be treated as a card")
+	}
+}
+
+func TestDetectorCatchesHardSecretVariants(t *testing.T) {
+	d := New()
+	ctx := context.Background()
+	// Regression for previously-missed hard secrets.
+	for name, body := range map[string]string{
+		"encrypted_pkcs8_key": "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIF...",
+		"pgp_private_key":     "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQd...",
+		"github_fine_grained": "github_pat_11ABCDE0aZ_0123456789abcdefghij0123456789",
+	} {
+		if found, _ := d.Scan(ctx, "text/plain", []byte(body)); !found {
+			t.Errorf("%s: hard secret must be detected in %q", name, body)
+		}
+	}
 }

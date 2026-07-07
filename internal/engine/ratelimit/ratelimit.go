@@ -53,6 +53,10 @@ type Config struct {
 const (
 	numShards       = 64    // power of two; mask with numShards-1
 	maxKeysPerShard = 16384 // coarse memory bound; a full shard is reset
+	// unkeyedBucket is the shared bucket for requests that lack the configured
+	// selector (absent keyed header / empty source IP). The NUL prefix cannot
+	// collide with a real IP or header value.
+	unkeyedBucket = "\x00__unkeyed__"
 )
 
 // Engine enforces a token-bucket rate limit. It is safe for concurrent use.
@@ -115,7 +119,10 @@ func (e *Engine) Inspect(_ context.Context, req *engine.Request) (decision.Verdi
 	}
 	key := e.key(req)
 	if key == "" {
-		return decision.Verdict{}, nil // no key to limit by → don't block
+		// A request lacking the configured selector (an absent keyed header, or an
+		// empty source IP) shares ONE "unkeyed" bucket rather than being exempt —
+		// otherwise dropping the header/IP would be a complete rate-limit bypass.
+		key = unkeyedBucket
 	}
 	if e.allow(key) {
 		return decision.Verdict{}, nil
@@ -145,8 +152,8 @@ func (e *Engine) key(req *engine.Request) string {
 		// source of truth — derived from the rightmost trusted X-Forwarded-For hop).
 		// Never read a raw XFF token here: the leftmost is client-settable, so an
 		// attacker could rotate it to mint unlimited fresh buckets and evade the
-		// limit entirely. An empty SourceIP yields no key → not limited (fail open
-		// on a missing IP rather than on a spoofable one).
+		// limit entirely. An empty SourceIP yields no key → the caller routes it to
+		// the shared unkeyed bucket (not exempt).
 		return req.SourceIP
 	}
 }
@@ -173,9 +180,24 @@ func (e *Engine) allow(key string) bool {
 
 	b := s.buckets[key]
 	if b == nil {
-		// Coarse memory bound: if a shard is saturated (key-flood), reset it.
 		if len(s.buckets) >= maxKeysPerShard {
-			s.buckets = make(map[string]*bucket, maxKeysPerShard/2)
+			// Memory bound under a key-flood. Evict ONLY idle (fully-refilled) buckets —
+			// dropping a full bucket is a no-op, since it would be recreated at full
+			// tokens anyway. Unlike the old whole-shard wipe, this never resets an
+			// ACTIVE/limited key that co-hashes to this shard (which handed collateral
+			// victims a fresh full bucket, a transient rate-limit bypass).
+			fullAt := e.burst / e.rps // seconds for an empty bucket to refill to burst
+			for k, bk := range s.buckets {
+				if now.Sub(bk.last).Seconds() >= fullAt {
+					delete(s.buckets, k)
+				}
+			}
+			if len(s.buckets) >= maxKeysPerShard {
+				// Still saturated: a genuine flood of distinct ACTIVE keys. Serve this one
+				// a fresh bucket WITHOUT storing it — a key seen once needs no state — so
+				// memory stays bounded without disturbing any other key's bucket.
+				return true
+			}
 		}
 		s.buckets[key] = &bucket{tokens: e.burst - 1, last: now}
 		return true

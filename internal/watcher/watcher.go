@@ -13,6 +13,12 @@ import (
 	"github.com/cloudnativeworks/elchi-shield/internal/logging"
 )
 
+// backstopInterval is how often the watcher re-scans the directory unconditionally,
+// as a safety net for fsnotify events dropped on buffer overflow. Kept infrequent
+// because an unchanged re-scan still does directory I/O; correctness (never miss a
+// change) over immediacy.
+const backstopInterval = 5 * time.Minute
+
 // Watcher observes a directory and invokes a callback after a debounce window
 // once filesystem activity settles. Bursts of events (common when an agent
 // rewrites several files) coalesce into a single callback, so the expensive
@@ -50,13 +56,19 @@ func (w *Watcher) Run(ctx context.Context) error {
 	// The config directory may not exist yet at startup (e.g. elchi-client has not
 	// written it, or a k8s volume is still mounting). Wait for it instead of
 	// hard-failing so the service comes up and self-heals.
-	waited, err := w.ensureWatch(ctx, fsw)
-	if err != nil {
+	if _, err := w.ensureWatch(ctx, fsw); err != nil {
 		return err
 	}
 	if w.log != nil {
 		w.log.Info("config watcher started", "dir", w.dir, "debounce", w.debounce)
 	}
+
+	// Periodic safety re-scan: fsnotify's fixed event buffer can overflow during a
+	// slow reload and drop the final event of a burst; a re-scan re-reads the dir so
+	// no change is missed indefinitely. Cheap when nothing changed (the reloader
+	// hashes before compiling).
+	backstop := time.NewTicker(backstopInterval)
+	defer backstop.Stop()
 
 	// A stopped timer that we (re)set on each relevant event. Its channel fires
 	// once the directory has been quiet for the debounce window.
@@ -66,13 +78,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 	pending := false
 
-	// If we had to wait for the directory, files may have been written before the
-	// watch was established (those creates produce no event). Schedule an initial
-	// reload so the current contents are picked up.
-	if waited {
-		pending = true
-		timer.Reset(w.debounce)
-	}
+	// Always schedule an initial catch-up reload. Files may have been written before
+	// the watch was established — either while waiting for the directory to exist, or
+	// in the startup gap between the boot reload and this watch — and those creates
+	// produce no event. Redundant with the boot reload when nothing changed, which is
+	// cheap (hash-before-compile short-circuit).
+	pending = true
+	timer.Reset(w.debounce)
 
 	for {
 		select {
@@ -110,6 +122,15 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if pending {
 				pending = false
 				w.onChange()
+			}
+
+		case <-backstop.C:
+			// Safety re-scan: schedule a reload if one isn't already queued, so a
+			// dropped fsnotify event (or a file created in the startup gap) is picked up
+			// within one interval rather than waiting for the next unrelated event.
+			if !pending {
+				pending = true
+				timer.Reset(w.debounce)
 			}
 
 		case err, ok := <-fsw.Errors:

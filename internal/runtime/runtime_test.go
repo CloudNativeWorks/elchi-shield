@@ -114,3 +114,29 @@ func TestStoreConcurrentReadsDuringSwap(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestStorePinRefcount(t *testing.T) {
+	// The refcount is what lets the retirer wait for pinned streams to drain before
+	// Close()ing a retired snapshot's engines (W2 use-after-close fix).
+	s := NewStore(EmptySnapshot(time.Unix(0, 0)))
+	snap := s.Load()
+	if snap.Refs() != 0 {
+		t.Fatalf("fresh snapshot refs = %d, want 0", snap.Refs())
+	}
+	a := s.Pin()
+	b := s.Pin()
+	if snap.Refs() != 2 {
+		t.Fatalf("after 2 Pins refs = %d, want 2", snap.Refs())
+	}
+	a.Release()
+	b.Release()
+	if snap.Refs() != 0 {
+		t.Fatalf("after Releases refs = %d, want 0", snap.Refs())
+	}
+	var nilSnap *Snapshot // nil-safe
+	nilSnap.Acquire()
+	nilSnap.Release()
+	if nilSnap.Refs() != 0 {
+		t.Fatal("nil snapshot Refs must be 0")
+	}
+}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/cloudnativeworks/elchi-shield/internal/decision"
 	"github.com/cloudnativeworks/elchi-shield/internal/engine"
+	"github.com/cloudnativeworks/elchi-shield/internal/matcher"
 )
 
 func init() {
@@ -181,12 +182,16 @@ func (e *wafEngine) inspectRequest(tx cztypes.Transaction, req *engine.Request) 
 	// precheck-derived) host, CRS rule 920280 ("Request Missing a Host Header",
 	// severity CRITICAL) fires on EVERY request and the WAF 403s all legitimate
 	// traffic. Only added when absent, so genuine HTTP/1.1 Host headers are untouched.
-	if !hasHost && req.Host != "" {
-		tx.AddRequestHeader("host", req.Host)
+	// Hand Coraza the NORMALIZED host (userinfo/port/trailing-dot stripped, lowercased)
+	// — tx.Host is the raw :authority, so without this SERVER_NAME-keyed and numeric-host
+	// (920350) CRS rules would see the port.
+	host := matcher.NormalizeHost(req.Host)
+	if !hasHost && host != "" {
+		tx.AddRequestHeader("host", host)
 	}
 	// SetServerName must run before ProcessRequestHeaders for SERVER_NAME-keyed
 	// rules to see the host in phase 1.
-	tx.SetServerName(req.Host)
+	tx.SetServerName(host)
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		return verdict(it), nil
 	}
@@ -213,10 +218,19 @@ func (e *wafEngine) inspectRequest(tx cztypes.Transaction, req *engine.Request) 
 
 func (e *wafEngine) inspectResponse(tx cztypes.Transaction, req *engine.Request) (decision.Verdict, error) {
 	// REMOTE_ADDR / SERVER_NAME are still wanted on the response path (IP- and
-	// host-keyed response rules, audit log). Request-phase variables are absent by
-	// design — request and response are separate pipelines/transactions here.
+	// host-keyed response rules, audit log).
 	tx.ProcessConnection(req.SourceIP, 0, "", 0)
-	tx.SetServerName(req.Host)
+	tx.SetServerName(matcher.NormalizeHost(req.Host))
+	// Prime the CRS transaction collection: the OWASP CRS initializes tx.* (paranoia
+	// levels, inbound/outbound anomaly thresholds) — and shield's own tuning SecAction
+	// — in PHASE 1 (REQUEST-901). Response inspection is a separate transaction, so
+	// without running phase 1 here the outbound blocking rule (959100) compares the
+	// score against an UNSET threshold (→ false positives on benign responses) and
+	// `outbound_anomaly_threshold` is a dead knob. Run the request phases to set tx.*,
+	// discarding any inbound interruption: the request already passed the request-
+	// direction inspection; this pass exists only to initialize outbound evaluation.
+	tx.ProcessURI(req.Path, req.Method, "HTTP/1.1")
+	_ = tx.ProcessRequestHeaders()
 	req.Headers.RangeHeaders(func(name, value string) bool {
 		tx.AddResponseHeader(name, value)
 		return true

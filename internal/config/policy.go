@@ -129,6 +129,31 @@ func Resolve(base ResolvedPolicy, specs ...PolicySpec) ResolvedPolicy {
 			out.SkipChecks = append(out.SkipChecks, c)
 		}
 	}
+
+	// A DLP block is a body check: it only runs if the matching direction's body is
+	// buffered. Derive inspect_*_body from the DLP direction so configuring DLP is
+	// sufficient — otherwise a policy with `direction: request` (or `both`) but
+	// without the matching inspect flag would be a SILENT no-op, forwarding
+	// un-redacted PII / un-blocked secrets on the un-inspected direction.
+	if out.Checks.Body != nil && out.Checks.Body.DLP != nil {
+		switch out.Checks.Body.DLP.Direction {
+		case "request":
+			out.InspectRequestBody = true
+		case "both":
+			out.InspectRequestBody = true
+			out.InspectResponseBody = true
+		default: // "" (default) or "response"
+			out.InspectResponseBody = true
+		}
+	}
+	// require_json / detect_sensitive_data are direction-agnostic body checks that,
+	// like DLP, only run if the body is buffered. If the operator configured one but
+	// set NEITHER inspect flag, default to the request body (the common case) so the
+	// check isn't a silent no-op. An explicit inspect_*_body still picks the direction.
+	if out.Checks.Body != nil && (out.Checks.Body.RequireJSON || out.Checks.Body.DetectSensitiveData) &&
+		!out.InspectRequestBody && !out.InspectResponseBody {
+		out.InspectRequestBody = true
+	}
 	return out
 }
 

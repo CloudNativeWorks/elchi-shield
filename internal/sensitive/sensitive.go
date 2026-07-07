@@ -32,13 +32,16 @@ func New() *Detector {
 	return &Detector{
 		patterns: []pattern{
 			{"aws_access_key", regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
-			{"private_key", regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----`)},
+			// Generic key-type token so ENCRYPTED (PKCS#8) and PGP ... BLOCK armor are
+			// also caught, not just RSA/EC/OPENSSH/DSA.
+			{"private_key", regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----`)},
 			{"google_api_key", regexp.MustCompile(`\bAIza[0-9A-Za-z\-_]{35}\b`)},
 			{"slack_token", regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,}\b`)},
-			{"github_token", regexp.MustCompile(`\bgh[pousr]_[0-9A-Za-z]{36,}\b`)},
+			// Classic (ghp_/gho_/…) AND fine-grained (github_pat_) personal access tokens.
+			{"github_token", regexp.MustCompile(`\b(?:gh[pousr]_[0-9A-Za-z]{36,}|github_pat_[0-9A-Za-z_]{22,})\b`)},
 			{"stripe_key", regexp.MustCompile(`\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}\b`)},
 			{"jwt", regexp.MustCompile(`\beyJ[0-9A-Za-z_-]{8,}\.[0-9A-Za-z_-]{8,}\.[0-9A-Za-z_-]{8,}\b`)},
-			{"ssn", regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)},
+			{"ssn", regexp.MustCompile(`\b\d{3}[- ]\d{2}[- ]\d{4}\b`)},
 			{"email", regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)},
 		},
 		// 13–19 digit runs, optionally grouped by spaces/dashes; Luhn-validated.
@@ -111,6 +114,7 @@ func luhnValid(b []byte) bool {
 	sum := 0
 	alt := false
 	count := 0
+	var first byte // leftmost digit — backward iteration leaves it here last
 	for _, c := range slices.Backward(b) {
 		if c == ' ' || c == '-' {
 			continue
@@ -118,6 +122,7 @@ func luhnValid(b []byte) bool {
 		if c < '0' || c > '9' {
 			return false
 		}
+		first = c
 		n := int(c - '0')
 		if alt {
 			n *= 2
@@ -129,5 +134,8 @@ func luhnValid(b []byte) bool {
 		alt = !alt
 		count++
 	}
-	return count >= 13 && count <= 19 && sum%10 == 0
+	// Major card networks all start with 2–6 (Amex/Diners 3, Visa 4, MC 2/5,
+	// Discover/UnionPay 6). Requiring a valid leading IIN digit drops benign
+	// Luhn-passing numbers (all-zeros, sequential IDs) without missing real cards.
+	return count >= 13 && count <= 19 && sum%10 == 0 && first >= '2' && first <= '6'
 }

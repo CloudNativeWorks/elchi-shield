@@ -242,6 +242,16 @@ spec:
                   SecRequestBodyAccess On
                   SecRule REQUEST_HEADERS:Content-Type "@rx ^" "id:1010,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
                   SecRule REQUEST_BODY "@rx (?i)union\s+select" "id:1011,phase:2,deny,status:403,log,msg:'sqli'"
+        # WAF forcing a status code (418) that is NOT in Envoy's StatusCode enum,
+        # to check shield clamps/handles it rather than emitting a bad ImmediateResponse.
+        - match: { path_prefix: "/waf-418" }
+          policy:
+            mode: block
+            engines:
+              coraza:
+                directives: |
+                  SecRuleEngine On
+                  SecRule REQUEST_URI "@contains /waf-418" "id:1030,phase:1,deny,status:418,log,msg:'teapot'"
         # WAF on the RESPONSE body (phase:4) — blocks a leaked marker from upstream.
         - match: { path_prefix: "/waf-resp" }
           policy:
@@ -287,16 +297,132 @@ spec:
             inspect_response_body: true
             checks: { body: { detect_sensitive_data: true } }
         # DLP: redact PII / block hard secrets in the response body.
+        # No inspect_response_body here: it is auto-derived from dlp.direction=response.
         - match: { path_prefix: "/dlp" }
           policy:
             mode: block
-            inspect_response_body: true
             checks:
               body:
                 dlp:
                   direction: response
                   block: ["private_key", "aws_access_key"]
                   redact: ["credit_card", "email", "ssn", "jwt"]
+
+        # ============ Advanced field coverage ============
+
+        # Coraza with the EMBEDDED OWASP CRS (not custom directives) + rule exclusion.
+        - match: { path_prefix: "/waf-crs" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              # Embedded OWASP CRS. The response transaction now runs CRS phase-1 init,
+              # so a benign echo response no longer false-positives on outbound 959100.
+              coraza: { include_owasp: true, paranoia_level: 1 }
+
+        # API key from the QUERY string, custom param name, sha256-at-rest key.
+        # sha256("qkey-secret-1") = af0e29456f322e606885cd1e7f16eb3964c2f3f534bd8bbf4c5330a953a6c720
+        - match: { path_prefix: "/apikey-q" }
+          policy:
+            mode: block
+            engines:
+              api_key:
+                source: query
+                name: "api_key"
+                keys:
+                  - { sha256: "af0e29456f322e606885cd1e7f16eb3964c2f3f534bd8bbf4c5330a953a6c720", subject: q-user, scopes: ["read"] }
+
+        # DLP on the REQUEST body (redact PII before upstream, block hard secrets).
+        # No inspect_request_body here: auto-derived from dlp.direction=request.
+        - match: { path_prefix: "/dlp-req" }
+          policy:
+            mode: block
+            checks:
+              body:
+                dlp: { direction: request, block: ["private_key"], redact: ["credit_card", "email"] }
+
+        # DLP in DETECT mode: observe-only — must record the would-redaction but NOT
+        # rewrite the body (proves detect/shadow never mutate traffic).
+        - match: { path_prefix: "/dlp-detect" }
+          policy:
+            mode: detect
+            checks:
+              body:
+                dlp: { direction: response, redact: ["email"] }
+
+        # Bot: require_accept + require_accept_encoding heuristics; JA3 deny; JA4 score.
+        - match: { path_prefix: "/bot2" }
+          policy:
+            mode: block
+            engines:
+              bot:
+                score_threshold: 50
+                tls_fingerprint:
+                  ja3_header: "x-shield-ja3"
+                  deny_ja3: ["ja3-known-bad"]
+                  ja4_header: "x-shield-ja4"
+                  score_ja4: { "t13d-suspect-ja4": 60 }
+                heuristics: { require_accept: true, require_accept_encoding: true, score_per_anomaly: 30 }
+
+        # HMAC: sha512 + key-id rotation (secrets map) + required body digest.
+        - match: { path_prefix: "/hmac2" }
+          policy:
+            mode: block
+            inspect_request_body: true
+            engines:
+              hmac_sign:
+                secrets: { "2024": "old-secret-key-2024xx", "2025": "new-secret-key-2025xx" }
+                key_id_header: "X-Key-Id"
+                algorithm: sha512
+                window: 300s
+                require_body_digest: true
+
+        # GraphQL: whole-document field budget + fragment-depth bound.
+        - match: { path_prefix: "/graphql2" }
+          policy:
+            mode: block
+            engines:
+              graphql: { content_types: ["application/json"], paths: ["/graphql2"], max_total_fields: 5, max_fragment_depth: 3 }
+
+        # JWT: custom header name + clock-skew leeway (accept a just-expired token).
+        - match: { path_prefix: "/jwt-lw" }
+          policy:
+            mode: block
+            engines:
+              jwt: { algorithms: ["HS256"], hmac_secret: "e2e-secret", audience: "api", header_name: "X-Access-Token", leeway: 120s }
+
+        # IP reputation: allow_countries (default-deny others) + firehol_netset feed.
+        - match: { path_prefix: "/ip-geo-allow" }
+          policy:
+            mode: block
+            engines:
+              ip_reputation: { geoip: { database_file: "__CFG__/geo-country.mmdb", allow_countries: ["SE"] } }
+        - match: { path_prefix: "/ip-feed-fh" }
+          policy:
+            mode: block
+            engines:
+              ip_reputation:
+                feeds:
+                  - { name: fh, file: "__CFG__/feed-firehol.netset", format: firehol_netset, severity: high }
+
+        # Match by path_regex (only digit segments hit the block policy).
+        - match: { path_regex: "^/re/[0-9]+$" }
+          policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
+
+        # Match by request header value (HeaderMatch exact) in addition to the path.
+        - match: { path_prefix: "/hm", headers: [ { name: "X-Env", exact: "prod" } ] }
+          policy: { mode: block, checks: { headers: { forbidden: ["X-Debug"] } } }
+
+        # XFCC by subject DN and by cert fingerprint (hash), not just SPIFFE/DNS.
+        - match: { path_prefix: "/xfcc2" }
+          policy:
+            mode: block
+            engines:
+              xfcc:
+                header_name: "x-test-client-cert"
+                require_present: true
+                subjects: ["CN=web,OU=team"]
+                hashes: ["abc123def456"]
 
     # ---- A different exact hosts: ["monitor only (off) → proves host-specific routing. ----"]
     - hosts: ["other.example.com"]

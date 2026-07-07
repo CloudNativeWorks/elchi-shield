@@ -95,6 +95,9 @@ func overlaySpec(base, over PolicySpec) PolicySpec {
 	if over.SamplingRate != nil {
 		out.SamplingRate = over.SamplingRate
 	}
+	if over.AnomalyThreshold != nil {
+		out.AnomalyThreshold = over.AnomalyThreshold
+	}
 	if len(over.SkipChecks) > 0 {
 		out.SkipChecks = unionStrings(out.SkipChecks, over.SkipChecks)
 	}

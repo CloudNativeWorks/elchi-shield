@@ -26,6 +26,11 @@ const (
 	FormatSpamhausJSON  = "spamhaus_json"
 )
 
+// maxFeedEntries bounds the prefixes a single feed may contribute, so a runaway or
+// corrupt multi-GB feed can't OOM the process on reload. 5M prefixes (~120 MB of
+// netip.Prefix) is far above any real threat feed.
+const maxFeedEntries = 5_000_000
+
 // KnownFormat reports whether format is a recognized feed format.
 func KnownFormat(format string) bool {
 	switch format {
@@ -84,6 +89,9 @@ func Load(path, format string) ([]netip.Prefix, error) {
 			return nil, fmt.Errorf("%s:%d: %w", path, line, err)
 		}
 		out = append(out, p)
+		if len(out) > maxFeedEntries {
+			return nil, fmt.Errorf("%s: feed exceeds the %d-entry limit", path, maxFeedEntries)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -99,11 +107,27 @@ func parsePrefix(token string) (netip.Prefix, error) {
 		if err != nil {
 			return netip.Prefix{}, fmt.Errorf("invalid CIDR %q: %w", token, err)
 		}
-		return p.Masked(), nil
+		return unmapPrefix(p).Masked(), nil
 	}
 	addr, err := netip.ParseAddr(token)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("invalid IP %q: %w", token, err)
 	}
+	// The reputation engine Unmap()s the client IP before lookup, so store feed
+	// entries in native IPv4 form too — otherwise an IPv4-mapped-IPv6 feed line never
+	// matches.
+	addr = addr.Unmap()
 	return netip.PrefixFrom(addr, addr.BitLen()), nil
+}
+
+// unmapPrefix normalizes an IPv4-in-IPv6 prefix (e.g. ::ffff:1.2.3.0/120) to its
+// native IPv4 form (1.2.3.0/24) so it matches the unmapped client IP. A native IPv4
+// or IPv6 prefix is returned unchanged.
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	if p.Addr().Is4In6() && p.Bits() >= 96 {
+		if np, err := p.Addr().Unmap().Prefix(p.Bits() - 96); err == nil {
+			return np
+		}
+	}
+	return p
 }

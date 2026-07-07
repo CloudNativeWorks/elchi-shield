@@ -31,6 +31,17 @@ func TestResolveInheritanceOrder(t *testing.T) {
 	}
 }
 
+func TestOverlaySpecCarriesAnomalyThreshold(t *testing.T) {
+	// Regression: a file-`defaults` anomaly_threshold must survive the merge. It was
+	// dropped by overlaySpec, silently forcing the resolved threshold to 0 and
+	// disabling anomaly-score blocking configured at spec.defaults.
+	at := 10
+	got := overlaySpec(PolicySpec{}, PolicySpec{AnomalyThreshold: &at})
+	if got.AnomalyThreshold == nil || *got.AnomalyThreshold != 10 {
+		t.Fatalf("anomaly_threshold must survive overlay, got %v", got.AnomalyThreshold)
+	}
+}
+
 func TestResolveSkipChecksUnion(t *testing.T) {
 	got := Resolve(DefaultPolicy(),
 		PolicySpec{SkipChecks: []string{"sqli"}},

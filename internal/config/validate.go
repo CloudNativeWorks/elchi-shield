@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -139,8 +140,8 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 	if s.FailMode != nil && !s.FailMode.Valid() {
 		add("fail_mode", fmt.Errorf("invalid fail_mode %q", *s.FailMode))
 	}
-	if s.SamplingRate != nil && (*s.SamplingRate < 0 || *s.SamplingRate > 1) {
-		add("sampling_rate", fmt.Errorf("must be within [0,1], got %v", *s.SamplingRate))
+	if s.SamplingRate != nil && (math.IsNaN(*s.SamplingRate) || math.IsInf(*s.SamplingRate, 0) || *s.SamplingRate < 0 || *s.SamplingRate > 1) {
+		add("sampling_rate", fmt.Errorf("must be a finite value within [0,1], got %v", *s.SamplingRate))
 	}
 	checkNonNeg := func(field string, v *int64) {
 		if v != nil && *v < 0 {
@@ -211,6 +212,38 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 		}
 		validateOrder("pipeline.request", s.Pipeline.Request)
 		validateOrder("pipeline.response", s.Pipeline.Response)
+		// Completeness: an explicit order silently DROPS any inspector it omits —
+		// including all engines. If this policy configures an inspector, its order must
+		// list it, or that inspection is lost with no warning.
+		var required []string
+		if s.Checks.Headers != nil {
+			required = append(required, StageFastPreChecks)
+		}
+		if s.Checks.Body != nil {
+			required = append(required, StageBodyChecks)
+		}
+		if s.Engines != nil {
+			required = append(required, StageWAFEngine)
+		}
+		checkComplete := func(field string, names []string, requestOnly string) {
+			if names == nil {
+				return // no explicit order → the default (complete) pipeline is used
+			}
+			present := map[string]struct{}{}
+			for _, n := range names {
+				present[n] = struct{}{}
+			}
+			for _, r := range required {
+				if r == requestOnly {
+					continue // fast_pre_checks does not run on the response direction
+				}
+				if _, ok := present[r]; !ok {
+					add(field, fmt.Errorf("stage %q is configured on this policy but omitted from the order — it would be silently skipped; list it or drop the explicit order", r))
+				}
+			}
+		}
+		checkComplete("pipeline.request", s.Pipeline.Request, "")
+		checkComplete("pipeline.response", s.Pipeline.Response, StageFastPreChecks)
 	}
 
 	if s.Checks.Body != nil && s.Checks.Body.DLP != nil {
@@ -254,8 +287,8 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 			validateCoraza(c, add)
 		}
 		if rl := s.Engines.RateLimit; rl != nil {
-			if rl.RequestsPerSecond <= 0 {
-				add("engines.rate_limit.requests_per_second", errors.New("must be > 0"))
+			if math.IsNaN(rl.RequestsPerSecond) || math.IsInf(rl.RequestsPerSecond, 0) || rl.RequestsPerSecond <= 0 {
+				add("engines.rate_limit.requests_per_second", errors.New("must be a finite value > 0"))
 			}
 			if rl.Burst < 0 {
 				add("engines.rate_limit.burst", errors.New("must be >= 0 (0 = derive from rate)"))
@@ -293,9 +326,25 @@ func validateSpec(file, prefix string, s PolicySpec) []error {
 			}
 		}
 		if g := s.Engines.GraphQL; g != nil {
-			if g.MaxDepth == 0 && g.MaxAliases == 0 && g.MaxRootFields == 0 && g.MaxTotalFields == 0 &&
-				g.MaxOperations == 0 && !g.BlockIntrospection {
-				add("engines.graphql", errors.New("at least one limit (max_depth/max_aliases/max_root_fields/max_total_fields/max_operations) or block_introspection is required"))
+			// A negative limit would pass a "!= 0" guard but the engine gates each
+			// limit on > 0, so it would silently NOT apply. Reject negatives.
+			for _, lim := range []struct {
+				name string
+				v    int
+			}{
+				{"max_depth", g.MaxDepth}, {"max_aliases", g.MaxAliases}, {"max_root_fields", g.MaxRootFields},
+				{"max_total_fields", g.MaxTotalFields}, {"max_operations", g.MaxOperations},
+				{"max_fragment_depth", g.MaxFragmentDepth}, {"max_complexity", g.MaxComplexity},
+			} {
+				if lim.v < 0 {
+					add("engines.graphql."+lim.name, errors.New("must be >= 0"))
+				}
+			}
+			// "At least one limit" — count only positive limits, and include
+			// max_complexity / max_fragment_depth (real, active limits).
+			if g.MaxDepth <= 0 && g.MaxAliases <= 0 && g.MaxRootFields <= 0 && g.MaxTotalFields <= 0 &&
+				g.MaxOperations <= 0 && g.MaxFragmentDepth <= 0 && g.MaxComplexity <= 0 && !g.BlockIntrospection {
+				add("engines.graphql", errors.New("at least one limit (max_depth/max_aliases/max_root_fields/max_total_fields/max_operations/max_fragment_depth/max_complexity) or block_introspection is required"))
 			}
 		}
 		if o := s.Engines.OpenAPI; o != nil {
@@ -341,12 +390,25 @@ func validateCoraza(c *CorazaSpec, add func(field string, err error)) {
 	if c.OutboundAnomalyThreshold < 0 {
 		add("engines.coraza.outbound_anomaly_threshold", errors.New("must be >= 0 (0 = CRS default 4)"))
 	}
+	// exclude_rule_ids is concatenated verbatim into SecLang as `SecRuleRemoveById`.
+	// A value with a newline (or other non-id chars) would inject an arbitrary
+	// directive — e.g. `SecRuleEngine Off` — silently disabling the WAF. Require a
+	// bare numeric id or id range.
+	for i, id := range c.ExcludeRuleIDs {
+		if !corazaRuleIDRe.MatchString(id) {
+			add(fmt.Sprintf("engines.coraza.exclude_rule_ids[%d]", i), fmt.Errorf("must be a numeric rule id or range (e.g. 942100 or 942100-942999), got %q", id))
+		}
+	}
 }
+
+// corazaRuleIDRe matches a single CRS rule id or an id range.
+var corazaRuleIDRe = regexp.MustCompile(`^[0-9]+(-[0-9]+)?$`)
 
 // knownDLPKinds is the set of sensitive-data kinds the detector can produce.
 var knownDLPKinds = map[string]struct{}{
 	"credit_card": {}, "ssn": {}, "email": {}, "jwt": {}, "aws_access_key": {},
 	"private_key": {}, "google_api_key": {}, "slack_token": {}, "github_token": {},
+	"stripe_key": {},
 }
 
 // validateDLP checks the DLP config: a known direction and known kinds.

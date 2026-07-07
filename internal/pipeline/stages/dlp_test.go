@@ -123,3 +123,19 @@ func TestRedactBodySinglePass(t *testing.T) {
 		t.Fatalf("non-matched spans must be preserved: %q", got)
 	}
 }
+
+func TestRedactBodyOverlappingMatchTail(t *testing.T) {
+	// Two overlapping redact matches: the later, longer one is skipped by the overlap
+	// guard, but its tail past the first match must still be masked — previously that
+	// tail (sensitive bytes) was forwarded in the clear.
+	body := []byte("AAAAAAAAAAAAAxxxxxxx") // 20 bytes
+	ms := []sensitive.Match{{Start: 0, End: 13, Kind: "credit_card"}, {Start: 2, End: 20, Kind: "email"}}
+	redact := map[string]struct{}{"credit_card": {}, "email": {}}
+	out, changed := redactBody(body, ms, redact)
+	if !changed {
+		t.Fatal("expected redaction")
+	}
+	if strings.Contains(string(out), "xxxxxxx") {
+		t.Fatalf("overlapping-match tail leaked unmasked: %q", out)
+	}
+}

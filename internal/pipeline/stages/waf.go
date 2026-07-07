@@ -85,7 +85,11 @@ func runEngines(ctx context.Context, tx *pipeline.Transaction, inspect engineIns
 	if v.Score > 0 {
 		tx.AddAnomalyScore(v.Score)
 	}
-	if t := p.AnomalyThreshold; t > 0 && tx.AnomalyScore() >= t {
+	if t := p.AnomalyThreshold; t > 0 && tx.AnomalyScore() >= t && !tx.AnomalyDenied() {
+		// Report the crossing once per request direction. In detect/shadow the executor
+		// records-and-continues, so without this guard the header AND body WAF phases
+		// would each record/audit the same (persistent) score crossing.
+		tx.MarkAnomalyDenied()
 		d := decision.Decision{
 			Action:     decision.Block,
 			Reason:     "anomaly score crossed threshold",
