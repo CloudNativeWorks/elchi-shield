@@ -76,14 +76,12 @@ func (w *Watcher) Run(ctx context.Context) error {
 	if !timer.Stop() {
 		<-timer.C
 	}
-	pending := false
-
 	// Always schedule an initial catch-up reload. Files may have been written before
 	// the watch was established — either while waiting for the directory to exist, or
 	// in the startup gap between the boot reload and this watch — and those creates
 	// produce no event. Redundant with the boot reload when nothing changed, which is
 	// cheap (hash-before-compile short-circuit).
-	pending = true
+	pending := true
 	timer.Reset(w.debounce)
 
 	for {
