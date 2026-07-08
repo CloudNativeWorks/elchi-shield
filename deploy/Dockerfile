@@ -20,10 +20,13 @@ COPY . .
 
 ARG APP_VERSION=dev
 ARG COMMIT=""
-RUN CGO_ENABLED=0 go build \
+# CRS_VERSION = the coraza-coreruleset pin from go.mod, stamped so the binary self-reports
+# which embedded OWASP CRS it enforces (the control plane's fleet view relies on it).
+RUN CRS_VERSION="$(awk '/corazawaf\/coraza-coreruleset\/v4 /{print $2}' go.mod)" && \
+    CGO_ENABLED=0 go build \
         -trimpath \
         -buildvcs=true \
-        -ldflags "-s -w -X main.version=${APP_VERSION} -X main.commit=${COMMIT}" \
+        -ldflags "-s -w -X main.version=${APP_VERSION} -X main.commit=${COMMIT} -X main.crsVersion=${CRS_VERSION}" \
         -o /elchi-shield ./cmd/elchi-shield
 
 # Distroless static (no shell, no package manager), running as a non-root user.

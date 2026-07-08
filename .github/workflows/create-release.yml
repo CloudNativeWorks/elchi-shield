@@ -66,12 +66,15 @@ jobs:
         if: steps.check_release.outputs.exists == 'false'
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
+          # The embedded OWASP CRS version = the coraza-coreruleset pin (stamped so each
+          # edge self-reports which ruleset it enforces; the control plane relies on it).
+          CRS_VERSION="$(awk '/corazawaf\/coraza-coreruleset\/v4 /{print $2}' go.mod)"
           mkdir -p binaries
           for ARCH in amd64 arm64; do
             BIN_NAME="elchi-shield-v${VERSION}-linux-${ARCH}"
             CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build \
               -trimpath \
-              -ldflags "-s -w -X main.version=v${VERSION} -X main.commit=${{ github.sha }}" \
+              -ldflags "-s -w -X main.version=v${VERSION} -X main.commit=${{ github.sha }} -X main.crsVersion=${CRS_VERSION}" \
               -o "binaries/${BIN_NAME}" ./cmd/elchi-shield
             (cd binaries && sha256sum "${BIN_NAME}" > "${BIN_NAME}.sha256")
           done
