@@ -364,8 +364,13 @@ func (m *Metrics) RecordReload(outcome runtime.Outcome, version string) {
 		m.lastReloadOK.SetToCurrentTime()
 		m.reloadFailStreak.Set(0)
 	case runtime.OutcomeUnchanged, runtime.OutcomeEmpty:
-		m.reloadOK.Inc()
-		m.lastReloadOK.SetToCurrentTime()
+		// NOT an actual reload — no new config was applied. Do not count it as a reload
+		// success or bump the last-reload timestamp: a periodic no-op re-scan (the
+		// watcher backstop) or a management-plane reconcile re-pushing identical config
+		// must not look like a config change on dashboards/alerts. Only clear the
+		// failure streak — a valid unchanged config means the sidecar isn't failing.
+		// (Staleness is tracked independently by config_age_seconds, off the snapshot
+		// build time, which only advances on an actual apply.)
 		m.reloadFailStreak.Set(0)
 	case runtime.OutcomeFailed:
 		m.reloadFail.Inc()
@@ -376,16 +381,16 @@ func (m *Metrics) RecordReload(outcome runtime.Outcome, version string) {
 // SetBuildInfo registers a build_info gauge (value 1) carrying version metadata
 // as labels, so dashboards/alerts can join on the running binary and confirm
 // rollouts across a fleet of sidecars.
-func (m *Metrics) SetBuildInfo(version, revision, goVersion, buildTime string) {
+func (m *Metrics) SetBuildInfo(version, revision, goVersion, buildTime, corerulesetVersion string) {
 	if m == nil {
 		return
 	}
 	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "build_info",
 		Help: "Build metadata (value is always 1); join on the labels.",
-	}, []string{"version", "revision", "goversion", "build_time"})
+	}, []string{"version", "revision", "goversion", "build_time", "coreruleset_version"})
 	m.register(g)
-	g.WithLabelValues(version, revision, goVersion, buildTime).Set(1)
+	g.WithLabelValues(version, revision, goVersion, buildTime, corerulesetVersion).Set(1)
 }
 
 // RecordDecision records one phase decision plus its latency, labeled by phase

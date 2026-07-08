@@ -140,8 +140,13 @@ func TestRecordReloadAndVersion(t *testing.T) {
 	m := New("")
 	m.RecordReload(runtime.OutcomeApplied, "v1")
 	m.RecordReload(runtime.OutcomeFailed, "v1")
+	// A no-op re-scan (unchanged config, or an emptied dir keeping last-good) is NOT a
+	// reload — it must not inflate the success counter (otherwise the periodic watcher
+	// backstop would look like a config change every few minutes).
+	m.RecordReload(runtime.OutcomeUnchanged, "v1")
+	m.RecordReload(runtime.OutcomeEmpty, "v1")
 	if got := gather(t, m, "config_reload_success_total"); got != 1 {
-		t.Errorf("reload success = %v, want 1", got)
+		t.Errorf("reload success = %v, want 1 (unchanged/empty must not count)", got)
 	}
 	if got := gather(t, m, "config_reload_failure_total"); got != 1 {
 		t.Errorf("reload failure = %v, want 1", got)

@@ -377,6 +377,19 @@ ship). The directive bundle is: `@coraza.conf-recommended` → **`SecRuleEngine 
 → `@crs-setup.conf.example` → your tuning → `@owasp_crs/*.conf` → your
 `directives`/`directives_file` → `exclude_rule_ids` removals.
 
+**CRS version (compile-time, self-reported):** the ruleset version is the
+`coraza-coreruleset/v4` pin in `go.mod` — it is **compiled into the binary**, not
+runtime-selectable, so each edge enforces whatever its shield binary embeds. The
+version constant isn't importable (the module's `version.go` is `//go:build mage`),
+so the `Makefile` stamps it from `go.mod` via `-X main.crsVersion`, and shield
+surfaces it at runtime in **`/configz` (`coreruleset_version`)** and the
+**`build_info`** metric label. elchi-client scrapes `/configz` and reports it to the
+control plane, which shows the matching CRS rule library in the UI and warns on a
+mixed-version fleet. **Upgrading:** bump the `go.mod` pin and rebuild (the version
+auto-stamps); the backend regenerates its browsable library for that version — see
+elchi-backend `docs/CRS-VERSION-RUNBOOK.md`. This is orthogonal to the WASM WAF's
+own CRS, which is a separate, independently-versioned delivery.
+
 **`SecRuleEngine` is forced On** (overriding the CRS shipped `DetectionOnly`)
 because shield expresses detect/shadow/off via the **policy mode** — the engine
 must always enforce so the CRS blocking-evaluation rule actually raises an

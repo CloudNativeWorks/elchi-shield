@@ -47,6 +47,11 @@ import (
 var (
 	version = "dev"
 	commit  = ""
+	// crsVersion is the embedded OWASP CRS (coraza-coreruleset module) version,
+	// stamped from go.mod at build time (see the Makefile). "unknown" on a plain
+	// `go build`. Surfaced in /configz + build_info so the control plane can tell
+	// which ruleset each edge's compiled-in Coraza actually enforces.
+	crsVersion = "unknown"
 )
 
 // buildInfo returns the binary's version metadata: the ldflags-injected version
@@ -276,7 +281,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 
 	// Observability: metrics registry (instance-labeled) + optional audit sink.
 	m := metrics.New(cfg.instanceID)
-	m.SetBuildInfo(bVer, bRev, bGo, bTime)
+	m.SetBuildInfo(bVer, bRev, bGo, bTime, crsVersion)
 	auditor, auditBuf, err := buildAuditor(cfg, auditLog)
 	if err != nil {
 		return fmt.Errorf("build auditor: %w", err)
@@ -441,6 +446,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 			Build:              bVer,
 			Revision:           bRev,
 			GoVersion:          bGo,
+			CorerulesetVersion: crsVersion,
 			LastReloadError:    lastErr,
 			LastReloadFailures: failures,
 		}

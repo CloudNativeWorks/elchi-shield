@@ -27,6 +27,11 @@ type ConfigInfo struct {
 	Build     string   `json:"build"`
 	Revision  string   `json:"revision"`
 	GoVersion string   `json:"go_version"`
+	// CorerulesetVersion is the embedded OWASP CRS (coraza-coreruleset) version this
+	// binary compiled in — the ruleset `include_owasp` actually enforces. The control
+	// plane reads it (via elchi-client's /configz scrape) to show the right CRS
+	// library in the UI and warn on a mixed-version fleet.
+	CorerulesetVersion string `json:"coreruleset_version"`
 	// LastReloadError is the attributed reason of the most recent REJECTED reload
 	// (empty when the last reload succeeded). The active config above is still the
 	// last-good one; this surfaces WHY a newer config was kept out so the pushing

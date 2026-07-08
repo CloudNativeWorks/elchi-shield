@@ -6,8 +6,12 @@ CMD       ?= ./cmd/elchi-shield
 # VERSION is the single source of truth (also consumed by create-release.yml).
 VERSION   ?= $(shell cat VERSION 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+# The embedded OWASP CRS version = the coraza-coreruleset module pin in go.mod
+# (compile-time; the module's own version constant is not importable). Stamped into
+# /configz + build_info so the control plane knows which ruleset each edge enforces.
+CRS_VERSION ?= $(shell awk '/corazawaf\/coraza-coreruleset\/v4 /{print $$2}' go.mod)
 DOCKER_IMAGE ?= elchi-shield
-LDFLAGS   := -s -w -X main.version=v$(VERSION) -X main.commit=$(COMMIT)
+LDFLAGS   := -s -w -X main.version=v$(VERSION) -X main.commit=$(COMMIT) -X main.crsVersion=$(CRS_VERSION)
 
 .PHONY: all build run test race bench loadtest loadtest-real profile cover vet lint tidy clean fmt fuzz vuln docker e2e e2e-clickhouse e2e-fullchain install uninstall
 

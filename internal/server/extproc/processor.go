@@ -96,13 +96,6 @@ func NewProcessor(cfg Config) *Processor {
 	}
 }
 
-// maxStreamIdle bounds how long an ext_proc stream may sit with no message before
-// it is torn down as stuck/half-open, releasing its pinned Transaction, snapshot
-// refcount, and body budget. A generous backstop: Envoy's own stream_idle_timeout is
-// the primary bound, and this stays well above any legitimate inter-message gap
-// (e.g. Envoy buffering a slow body upload) while sitting below MaxConnectionAge.
-const maxStreamIdle = 15 * time.Minute
-
 // Process is the bidirectional ext_proc stream handler. It recovers any panic
 // (in our code or a third-party engine like Coraza/JWT) so a single bad stream
 // can never crash the process or take down the other listeners.
@@ -144,96 +137,32 @@ func (pr *Processor) Process(stream extprocv3.ExternalProcessor_ProcessServer) (
 	// is only paid when that header is absent.
 	tx.ListenerID = pr.listenerID
 
-	// Per-stream idle deadline. A half-open stream (opened then silent, or a peer that
-	// stalls mid-upload) otherwise pins a pooled Transaction, the snapshot refcount, and
-	// any buffered body-budget bytes until Envoy's own stream/connection timeout — and
-	// under a misconfigured Envoy, up to MaxConnectionAge. Recv runs in a reader
-	// goroutine so the loop can bound the idle wait. The goroutine is per-stream and
-	// ends with it: when Process returns, ctx (the stream context) is cancelled, so the
-	// reader's ctx.Done() branch exits — no leak. Recv (reader) and Send (loop) run in
-	// separate goroutines, which gRPC permits for opposite stream directions. Envoy's
-	// stream_idle_timeout remains the primary bound; this is a backstop.
-	type recvResult struct {
-		req      *extprocv3.ProcessingRequest
-		err      error
-		panicked bool
-	}
-	recvCh := make(chan recvResult, 1)
-	go func() {
-		// Recv now runs off the main goroutine, so Process's stream-boundary recover no
-		// longer covers a panic from the framer/transport. Recover here too — mirror the
-		// same metric+log and hand the main loop a codes.Internal error — so a Recv panic
-		// still can't crash the process (one stream dies, others survive).
-		defer func() {
-			if rec := recover(); rec != nil {
-				pr.metrics.RecordExtprocError("panic")
-				if pr.log != nil {
-					pr.log.Error("panic recovered in ext_proc recv",
-						logging.KeyListener, pr.listenerID, "panic", rec, "stack", string(debug.Stack()))
-				}
-				select {
-				case recvCh <- recvResult{err: status.Errorf(codes.Internal, "internal error"), panicked: true}:
-				case <-ctx.Done():
-				}
-			}
-		}()
-		for {
-			req, rerr := stream.Recv()
-			select {
-			case recvCh <- recvResult{req: req, err: rerr}:
-			case <-ctx.Done():
-				return
-			}
-			if rerr != nil {
-				return
-			}
-		}
-	}()
-
-	idle := time.NewTimer(maxStreamIdle)
-	defer idle.Stop()
+	// Synchronous, allocation-lean stream loop — NO per-request goroutine (that would
+	// spawn a goroutine + channel per request at the hot-path scale). A half-open or
+	// stalled stream is bounded by Envoy's stream_idle_timeout and the gRPC server's
+	// MaxConnectionAge; its pinned snapshot is reference-counted, so a reload never
+	// Close()s engines out from under it (see Store.Pin / the retirer).
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		req, err := stream.Recv()
+		if err != nil {
+			// io.EOF is a clean half-close. A Canceled stream (context or gRPC code)
+			// is ALSO a normal teardown: Envoy cancels the per-request ext_proc stream
+			// once the request finishes (or the downstream connection closes). These
+			// are not transport faults — counting them inflated extproc_errors_total on
+			// every request and read like an outage. Only genuine errors are recorded.
+			if errors.Is(err, io.EOF) || isStreamEnded(err) {
+				return nil
+			}
+			pr.metrics.RecordExtprocError("transport")
+			return err
+		}
 
-		case <-idle.C:
-			// No message for maxStreamIdle — a stuck/half-open stream. Fail closed: this
-			// stream dies (others are unaffected) and its pinned resources are released.
-			pr.metrics.RecordExtprocError("idle_timeout")
-			return status.Error(codes.DeadlineExceeded, "ext_proc stream idle timeout")
-
-		case r := <-recvCh:
-			if r.err != nil {
-				if r.panicked {
-					return r.err // panic already recorded + logged by the reader goroutine
-				}
-				// io.EOF is a clean half-close. A Canceled stream (context or gRPC code)
-				// is ALSO a normal teardown: Envoy cancels the per-request ext_proc stream
-				// once the request finishes (or the downstream connection closes). These
-				// are not transport faults — counting them inflated extproc_errors_total on
-				// every request and read like an outage. Only genuine errors are recorded.
-				if errors.Is(r.err, io.EOF) || isStreamEnded(r.err) {
-					return nil
-				}
-				pr.metrics.RecordExtprocError("transport")
-				return r.err
-			}
-			if !idle.Stop() {
-				select {
-				case <-idle.C:
-				default:
-				}
-			}
-			idle.Reset(maxStreamIdle)
-
-			resp := pr.handle(ctx, tx, r.req)
-			if resp == nil {
-				continue
-			}
-			if err := stream.Send(resp); err != nil {
-				return err
-			}
+		resp := pr.handle(ctx, tx, req)
+		if resp == nil {
+			continue
+		}
+		if err := stream.Send(resp); err != nil {
+			return err
 		}
 	}
 }

@@ -37,6 +37,20 @@ START_SERVICE=true      # --no-start to install without enabling/starting
 # The DSN may carry credentials, so it is stored in a restricted EnvironmentFile.
 AUDIT_CLICKHOUSE_DSN="${ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN:-}"
 METRICS_OTLP_ENDPOINT="${ELCHI_SHIELD_METRICS_OTLP_ENDPOINT:-}"   # OTel Collector host:port (OTLP/gRPC)
+
+# Runtime memory tuning — auto-sized to THIS host and written into the systemd unit.
+# shield is a SIDECAR (Envoy + the app + elchi-client also run here), so it takes only
+# a fraction of host RAM, clamped to a floor (it needs this much to function) and a cap
+# (it never needs more). GOMEMLIMIT = the budget; the in-flight body buffer = budget/3
+# so that 2×buffer stays under GOMEMLIMIT (the constraint shield warns about). GOGC and
+# the per-request body cap are fixed sensible defaults. All overridable via flags/env.
+MEM_FRACTION="${ELCHI_SHIELD_MEM_FRACTION:-20}"          # % of host RAM for shield
+MEM_FLOOR_MIB="${ELCHI_SHIELD_MEM_FLOOR_MIB:-384}"       # never below this
+MEM_CAP_MIB="${ELCHI_SHIELD_MEM_CAP_MIB:-2048}"          # never above this
+MEM_LIMIT_BYTES="${ELCHI_SHIELD_MEM_LIMIT:-}"            # explicit override (skips auto)
+INFLIGHT_BYTES_OVERRIDE="${ELCHI_SHIELD_MAX_INFLIGHT_BODY_BYTES:-}"
+GOGC="${ELCHI_SHIELD_GOGC:-200}"                         # GC target %; higher = less GC
+MAX_BODY_BYTES="${ELCHI_SHIELD_MAX_BODY_BYTES:-262144}"  # 256 KiB per-request fallback cap
 METRICS_OTLP_INSECURE="${ELCHI_SHIELD_METRICS_OTLP_INSECURE:-}"   # set non-empty for plaintext gRPC
 
 # System users (shared stack identities; created idempotently)
@@ -97,6 +111,10 @@ while [[ $# -gt 0 ]]; do
     --audit-clickhouse-dsn=*) AUDIT_CLICKHOUSE_DSN="${1#*=}"; shift ;;
     --metrics-otlp-endpoint=*) METRICS_OTLP_ENDPOINT="${1#*=}"; shift ;;
     --metrics-otlp-insecure)   METRICS_OTLP_INSECURE=1; shift ;;
+    --mem-fraction=*)          MEM_FRACTION="${1#*=}"; shift ;;
+    --mem-limit-bytes=*)       MEM_LIMIT_BYTES="${1#*=}"; shift ;;
+    --gogc=*)                  GOGC="${1#*=}"; shift ;;
+    --max-body-bytes=*)        MAX_BODY_BYTES="${1#*=}"; shift ;;
     --help|-h)
       echo "Usage: sudo $0 [OPTIONS]"
       echo ""
@@ -112,6 +130,10 @@ while [[ $# -gt 0 ]]; do
       echo "                              (else only loopback /metrics scrape; env:"
       echo "                               ELCHI_SHIELD_METRICS_OTLP_ENDPOINT)"
       echo "  --metrics-otlp-insecure     Plaintext gRPC to the metrics collector"
+      echo "  --mem-fraction=N   % of host RAM for shield (default 20; sidecar-sized)"
+      echo "  --mem-limit-bytes=N Explicit GOMEMLIMIT in bytes (skips auto-sizing)"
+      echo "  --gogc=N           GC target percent (default 200; higher = less GC)"
+      echo "  --max-body-bytes=N Per-request body-inspection fallback cap (default 262144)"
       echo "  --help, -h         Show this help"
       echo ""
       echo "Examples:"
@@ -282,6 +304,36 @@ else
   info "metrics sink: scrape only (loopback /metrics; no --metrics-otlp-endpoint given)"
 fi
 
+# --- Auto-size the runtime memory tuning to THIS host --------------------------
+# Budget = clamp(MemTotal * MEM_FRACTION%, MEM_FLOOR, MEM_CAP). GOMEMLIMIT = budget;
+# in-flight body buffer = budget/3 (keeps 2×buffer < GOMEMLIMIT). Explicit overrides win.
+MEM_TOTAL_KB="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+MEM_TOTAL_BYTES=$(( MEM_TOTAL_KB * 1024 ))
+FLOOR_BYTES=$(( MEM_FLOOR_MIB * 1024 * 1024 ))
+CAP_BYTES=$(( MEM_CAP_MIB * 1024 * 1024 ))
+if [[ -n "$MEM_LIMIT_BYTES" ]]; then
+  BUDGET_BYTES="$MEM_LIMIT_BYTES"                       # operator-specified
+elif [[ "$MEM_TOTAL_BYTES" -gt 0 ]]; then
+  BUDGET_BYTES=$(( MEM_TOTAL_BYTES * MEM_FRACTION / 100 ))
+  (( BUDGET_BYTES < FLOOR_BYTES )) && BUDGET_BYTES=$FLOOR_BYTES
+  (( BUDGET_BYTES > CAP_BYTES ))   && BUDGET_BYTES=$CAP_BYTES
+else
+  BUDGET_BYTES=$FLOOR_BYTES                             # /proc/meminfo unreadable
+  warn "could not read MemTotal; using floor ${MEM_FLOOR_MIB} MiB for shield memory"
+fi
+GOMEMLIMIT_BYTES=$BUDGET_BYTES
+if [[ -n "$INFLIGHT_BYTES_OVERRIDE" ]]; then
+  INFLIGHT_BYTES="$INFLIGHT_BYTES_OVERRIDE"
+else
+  INFLIGHT_BYTES=$(( BUDGET_BYTES / 3 ))
+fi
+info "memory tuning: host=$(( MEM_TOTAL_BYTES / 1024 / 1024 ))MiB → GOMEMLIMIT=$(( GOMEMLIMIT_BYTES / 1024 / 1024 ))MiB, inflight-body=$(( INFLIGHT_BYTES / 1024 / 1024 ))MiB, GOGC=$GOGC"
+# systemd Environment= lines (a 'systemctl edit' drop-in still overrides these).
+TUNING_ENV="Environment=ELCHI_SHIELD_GOGC=$GOGC
+Environment=ELCHI_SHIELD_MEM_LIMIT=$GOMEMLIMIT_BYTES
+Environment=ELCHI_SHIELD_MAX_INFLIGHT_BODY_BYTES=$INFLIGHT_BYTES
+Environment=ELCHI_SHIELD_MAX_BODY_BYTES=$MAX_BODY_BYTES"
+
 info "writing systemd unit $SERVICE_FILE"
 cat >"$SERVICE_FILE" <<EOF
 [Unit]
@@ -295,6 +347,10 @@ Type=simple
 User=$ELCHI_USER
 Group=$ELCHI_GROUP
 $ENV_FILE_LINE
+
+# Runtime memory tuning, auto-sized to this host at install time (override with
+# 'sudo systemctl edit elchi-shield').
+$TUNING_ENV
 
 # systemd creates/cleans /run/elchi-shield, group-owned so Envoy can reach the UDS.
 RuntimeDirectory=$RUN_DIR_NAME
