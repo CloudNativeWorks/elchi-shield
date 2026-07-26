@@ -36,7 +36,9 @@ func serverOptions(maxStreams uint32) []grpc.ServerOption {
 		// A bounded stream-worker pool (sized to CPUs) reuses goroutines/stacks
 		// instead of spawning one goroutine per stream, cutting per-request churn.
 		grpc.NumStreamWorkers(uint32(runtime.GOMAXPROCS(0))),
-		grpc.SharedWriteBuffer(true), // reuse write buffers, fewer allocations
+		// Shared write buffers (reuse buffers, fewer allocations) are enabled by
+		// default as of grpc-go v1.82; the explicit SharedWriteBuffer(true) option
+		// it replaced is deprecated, so we rely on the default.
 		// Larger HTTP/2 windows: ext_proc exchanges several small messages per
 		// stream; bigger windows avoid mid-request WINDOW_UPDATE round-trips, and a
 		// larger socket read buffer cuts read(2) syscalls. Memory cost is small (one
