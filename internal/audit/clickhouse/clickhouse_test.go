@@ -323,3 +323,32 @@ func TestCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("expected conn.Close once, got %d", conn.closed)
 	}
 }
+
+// TestReplicatedDDL verifies the engine rewrite fires only in replicated
+// mode, touches both engines the schema uses, and never double-rewrites.
+func TestReplicatedDDL(t *testing.T) {
+	plain := &Exporter{replicated: false}
+	repl := &Exporter{replicated: true}
+
+	in := ") ENGINE = MergeTree\nPARTITION BY x"
+	if got := plain.replicatedDDL(in); got != in {
+		t.Errorf("non-replicated mode must not rewrite: %q", got)
+	}
+	if got := repl.replicatedDDL(in); got != ") ENGINE = ReplicatedMergeTree\nPARTITION BY x" {
+		t.Errorf("MergeTree not rewritten: %q", got)
+	}
+	if got := repl.replicatedDDL("ENGINE = AggregatingMergeTree"); got != "ENGINE = ReplicatedAggregatingMergeTree" {
+		t.Errorf("AggregatingMergeTree not rewritten: %q", got)
+	}
+	already := "ENGINE = ReplicatedAggregatingMergeTree"
+	if got := repl.replicatedDDL(already); got != already {
+		t.Errorf("already-replicated engine mutated: %q", got)
+	}
+}
+
+// A fake conn returning a nil row must degrade detection to "plain", not panic.
+func TestDetectReplicatedDatabase_NilRow(t *testing.T) {
+	if detectReplicatedDatabase(context.Background(), &fakeConn{}) {
+		t.Error("nil row must mean not replicated")
+	}
+}

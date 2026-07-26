@@ -6,6 +6,7 @@ package clickhouse
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,12 @@ type Exporter struct {
 	table     string
 	batchSize int
 	ttlDays   int
+	// replicated is true when the target database uses the Replicated
+	// database engine (3+ node bare-metal cluster). ClickHouse does NOT
+	// auto-convert plain MergeTree tables in such a database — their DDL
+	// replicates but their DATA stays node-local — so ensureTable must
+	// emit Replicated* engines itself.
+	replicated bool
 
 	mu      sync.Mutex
 	batch   driver.Batch
@@ -145,6 +152,7 @@ func newExporter(conn driver.Conn, opts audit.ExporterOptions) (*Exporter, error
 	}
 
 	e := &Exporter{conn: conn, table: table, batchSize: batchSize, ttlDays: ttlDays, stop: make(chan struct{})}
+	e.replicated = detectReplicatedDatabase(context.Background(), conn)
 	// Best-effort schema bootstrap (CREATE TABLE + idempotent ALTERs). Swallow
 	// errors so a least-privilege INSERT-only user against a pre-provisioned table
 	// still works; PrepareBatch below is the real readiness gate (it needs only
@@ -160,6 +168,40 @@ func newExporter(conn driver.Conn, opts audit.ExporterOptions) (*Exporter, error
 		go e.flushLoop(opts.FlushInterval)
 	}
 	return e, nil
+}
+
+// detectReplicatedDatabase reports whether the connection's target database
+// uses the Replicated database engine. Best-effort: any failure (including a
+// least-privilege user or a test fake returning a nil row) means "plain" —
+// consistent with ensureTable's swallow-errors philosophy, since such
+// deployments have centrally provisioned tables anyway.
+func detectReplicatedDatabase(ctx context.Context, conn driver.Conn) bool {
+	row := conn.QueryRow(ctx,
+		"SELECT engine FROM system.databases WHERE name = currentDatabase()")
+	if row == nil {
+		return false
+	}
+	var engine string
+	if err := row.Scan(&engine); err != nil {
+		return false
+	}
+	return engine == "Replicated"
+}
+
+// engineRe matches plain MergeTree-family ENGINE clauses. It cannot match an
+// already-Replicated engine: after `=` the literal must start with "MergeTree"
+// or "AggregatingMergeTree", and "Replicated..." starts with neither.
+var engineRe = regexp.MustCompile(`\bENGINE\s*=\s*(Aggregating)?MergeTree\b`)
+
+// replicatedDDL rewrites plain MergeTree-family engines to their Replicated*
+// variants when the target database is Replicated. Argument-less Replicated
+// engines are valid there — ClickHouse derives the Keeper path and replica
+// name from the database's own macros.
+func (e *Exporter) replicatedDDL(ddl string) string {
+	if !e.replicated {
+		return ddl
+	}
+	return engineRe.ReplaceAllString(ddl, "ENGINE = Replicated${1}MergeTree")
 }
 
 // ensureTable best-effort provisions the schema. Errors are intentionally
@@ -199,7 +241,7 @@ func (e *Exporter) ensureTable(ctx context.Context) {
 	PARTITION BY toYYYYMMDD(ts)
 	ORDER BY (project_id, ts)
 	TTL toDateTime(ts) + INTERVAL %d DAY`, e.table, e.ttlDays)
-	_ = e.conn.Exec(ctx, ddl)
+	_ = e.conn.Exec(ctx, e.replicatedDDL(ddl))
 	// Idempotently add the columns a CREATE-IF-NOT-EXISTS would skip on a table
 	// from an older shield version. Without this, an upgrade against a
 	// pre-existing table would INSERT 19 values into a narrower table and fail on
@@ -232,7 +274,7 @@ func (e *Exporter) ensureRollup(ctx context.Context) {
 	// TTL is on `bucket` and pinned to the SAME retention as raw (e.ttlDays) — unlike
 	// the collector's 1m rollup (30d > raw 7d), shield's rollup is purely a scan-cost
 	// optimization over the raw window, NOT an extended-history store.
-	_ = e.conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+	_ = e.conn.Exec(ctx, e.replicatedDDL(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		bucket DateTime CODEC(DoubleDelta, ZSTD),
 		project_id LowCardinality(String),
 		node_id LowCardinality(String),
@@ -243,7 +285,7 @@ func (e *Exporter) ensureRollup(ctx context.Context) {
 	) ENGINE = AggregatingMergeTree
 	PARTITION BY toYYYYMMDD(bucket)
 	ORDER BY (project_id, node_id, engine, action, severity, bucket)
-	TTL bucket + INTERVAL %d DAY`, rollup, e.ttlDays))
+	TTL bucket + INTERVAL %d DAY`, rollup, e.ttlDays)))
 	// Exclude empty-project rows (Envoy sent no node attribute): the backend always
 	// scopes by a non-empty project_id, so they'd be dead aggregate state nothing
 	// reads. `CREATE MATERIALIZED VIEW IF NOT EXISTS` is multi-instance-idempotent
